@@ -18,6 +18,7 @@
 		3023C0F66562C88CD83B1B1F /* CommentsThread.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6600F5E3DF3434BE83DB1957 /* CommentsThread.swift */; };
 		36E718A897B72E44ABE0DFF9 /* SampleTrackBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A3B2A0043446413631434A8 /* SampleTrackBuilder.swift */; };
 		37818618F736E8B3BD078A31 /* SoftRule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98F27FE1015F4A6B837C0968 /* SoftRule.swift */; };
+		3992E7F1ED21CEA9D5A24EAA /* TrackModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A160C836BE3DD9036AB2F1B8 /* TrackModelTests.swift */; };
 		3D7971B95150F676D014D2E3 /* SettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84A15F8938169749CA9C6F05 /* SettingsSheet.swift */; };
 		3DC7340AE5102DBDFBF24C44 /* TrackLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 245D5BEED1FD0E80A6DD19F0 /* TrackLibrary.swift */; };
 		4022D7BD490FFEB7AE3AD5F1 /* StemSeparationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E29782928C426896D5ED3D76 /* StemSeparationService.swift */; };
@@ -27,6 +28,7 @@
 		680F11A4323A279DBC32239D /* AppNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B76A86B2A5DDF262854F9E7 /* AppNavigation.swift */; };
 		73BF9A996FB4CDB04D247D55 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCF7CFB9F7ECE29DC4BC91C7 /* HomeView.swift */; };
 		775D89EDA172FC21482D448B /* UploadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F2856C7D64A2C4B3791DDA /* UploadView.swift */; };
+		78E7E044C771600911DAE033 /* VideoOptimizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08CBD67D05D90455F115523F /* VideoOptimizer.swift */; };
 		7F4510E36B5C020D849D5634 /* WWAVApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61DC95CB481DF905975EB46C /* WWAVApp.swift */; };
 		8356E7EAA131017F96353B33 /* StemPlayerEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2EAFAB3F6A0F5F17D6B272A /* StemPlayerEngine.swift */; };
 		8FF186E9F7F85EB1C25B237A /* AuthManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 328E1422EC52B02643309C1B /* AuthManager.swift */; };
@@ -49,8 +51,19 @@
 		FF70187DFA54F669C1FF6DF9 /* Persistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DB32C30330E6E4EC7948D3F /* Persistence.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		6260A68B5573C5B45F427AF3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E5AAF4F65F24042110D5D4AE /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 3F90A654BE84F25B5CFF3F03;
+			remoteInfo = WWAV;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		004AF233855E3996960C7E60 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
+		08CBD67D05D90455F115523F /* VideoOptimizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoOptimizer.swift; sourceTree = "<group>"; };
 		1B9C6856B1F215C0499BC667 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		245D5BEED1FD0E80A6DD19F0 /* TrackLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackLibrary.swift; sourceTree = "<group>"; };
 		2AB21C8B0940A26B1AC51D00 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
@@ -66,6 +79,7 @@
 		61DC95CB481DF905975EB46C /* WWAVApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WWAVApp.swift; sourceTree = "<group>"; };
 		6600F5E3DF3434BE83DB1957 /* CommentsThread.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentsThread.swift; sourceTree = "<group>"; };
 		6A3B2A0043446413631434A8 /* SampleTrackBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleTrackBuilder.swift; sourceTree = "<group>"; };
+		6AB65ACD681A33F525A790DE /* WWAVTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WWAVTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		800232E827F16246145411B4 /* ProfileAvatar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileAvatar.swift; sourceTree = "<group>"; };
 		83E2C6D66A41B6F93D39CA6C /* Track.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Track.swift; sourceTree = "<group>"; };
 		84A15F8938169749CA9C6F05 /* SettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSheet.swift; sourceTree = "<group>"; };
@@ -77,6 +91,7 @@
 		92E4D544274A1A1E4396FB1B /* CommentModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentModels.swift; sourceTree = "<group>"; };
 		98F27FE1015F4A6B837C0968 /* SoftRule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoftRule.swift; sourceTree = "<group>"; };
 		9F4E270B6841D516CA3E7D4E /* StemPlayerWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemPlayerWidget.swift; sourceTree = "<group>"; };
+		A160C836BE3DD9036AB2F1B8 /* TrackModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackModelTests.swift; sourceTree = "<group>"; };
 		A332DB5DE91A1A3D67141B95 /* CircularWaveform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CircularWaveform.swift; sourceTree = "<group>"; };
 		A6A4147D46E82D705591B4C9 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B833F2389E24E4F95D947D05 /* AuthModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthModels.swift; sourceTree = "<group>"; };
@@ -94,6 +109,22 @@
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
+		12AB6F6E9B87558266B12B46 /* WWAVTests */ = {
+			isa = PBXGroup;
+			children = (
+				A160C836BE3DD9036AB2F1B8 /* TrackModelTests.swift */,
+			);
+			path = WWAVTests;
+			sourceTree = "<group>";
+		};
+		2B9AD5CF9660B06E4BA2B0D0 /* Video */ = {
+			isa = PBXGroup;
+			children = (
+				08CBD67D05D90455F115523F /* VideoOptimizer.swift */,
+			);
+			path = Video;
+			sourceTree = "<group>";
+		};
 		37F3253EF702FCAA580BF65D /* Resources */ = {
 			isa = PBXGroup;
 			children = (
@@ -119,6 +150,7 @@
 			isa = PBXGroup;
 			children = (
 				A704111EBD99C24E3F17D0A6 /* WWAV */,
+				12AB6F6E9B87558266B12B46 /* WWAVTests */,
 				D96C3341269D09D3E41BD410 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -151,6 +183,7 @@
 				37F3253EF702FCAA580BF65D /* Resources */,
 				981071601A01358E394A79F2 /* Storage */,
 				8329B3A5255C9E848B1BFC6C /* Theme */,
+				2B9AD5CF9660B06E4BA2B0D0 /* Video */,
 				D70D4B229C8404DEC2F65B69 /* Views */,
 			);
 			path = WWAV;
@@ -205,6 +238,7 @@
 			isa = PBXGroup;
 			children = (
 				894E6224F96E1C1E6DF275D5 /* WWAV.app */,
+				6AB65ACD681A33F525A790DE /* WWAVTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -224,6 +258,24 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		18F6477456000C86A028CD18 /* WWAVTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 80D49D132B9AB1A0FEA75F2E /* Build configuration list for PBXNativeTarget "WWAVTests" */;
+			buildPhases = (
+				A9A037157A22C6BEFEFE70DB /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				DB9398CAA8D8A7046ACFFAE3 /* PBXTargetDependency */,
+			);
+			name = WWAVTests;
+			packageProductDependencies = (
+			);
+			productName = WWAVTests;
+			productReference = 6AB65ACD681A33F525A790DE /* WWAVTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		3F90A654BE84F25B5CFF3F03 /* WWAV */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 6DC742A867EA0B3D2B6CE508 /* Build configuration list for PBXNativeTarget "WWAV" */;
@@ -251,6 +303,10 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1600;
 				TargetAttributes = {
+					18F6477456000C86A028CD18 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
 					3F90A654BE84F25B5CFF3F03 = {
 						ProvisioningStyle = Automatic;
 					};
@@ -271,6 +327,7 @@
 			projectRoot = "";
 			targets = (
 				3F90A654BE84F25B5CFF3F03 /* WWAV */,
+				18F6477456000C86A028CD18 /* WWAVTests */,
 			);
 		};
 /* End PBXProject section */
@@ -327,15 +384,66 @@
 				3DC7340AE5102DBDFBF24C44 /* TrackLibrary.swift in Sources */,
 				775D89EDA172FC21482D448B /* UploadView.swift in Sources */,
 				4690A8C441427A3347FC8F2B /* User.swift in Sources */,
+				78E7E044C771600911DAE033 /* VideoOptimizer.swift in Sources */,
 				A10F25C86C647ED95BBD48BC /* VideoPostPlayer.swift in Sources */,
 				7F4510E36B5C020D849D5634 /* WWAVApp.swift in Sources */,
 				A792E4F146EA658577645D1D /* WaveformAnalyzer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A9A037157A22C6BEFEFE70DB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3992E7F1ED21CEA9D5A24EAA /* TrackModelTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		DB9398CAA8D8A7046ACFFAE3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 3F90A654BE84F25B5CFF3F03 /* WWAV */;
+			targetProxy = 6260A68B5573C5B45F427AF3 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		4C1AEEAAE1F48061A6DB3CEB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.wwav.app.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WWAV.app/WWAV";
+			};
+			name = Debug;
+		};
+		73F38AC08C3C6808F594B217 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.wwav.app.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WWAV.app/WWAV";
+			};
+			name = Release;
+		};
 		8181D8C5A3093011747A009E /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -515,6 +623,15 @@
 			buildConfigurations = (
 				BBFD0A50E617435B9D084D1D /* Debug */,
 				8181D8C5A3093011747A009E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		80D49D132B9AB1A0FEA75F2E /* Build configuration list for PBXNativeTarget "WWAVTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4C1AEEAAE1F48061A6DB3CEB /* Debug */,
+				73F38AC08C3C6808F594B217 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

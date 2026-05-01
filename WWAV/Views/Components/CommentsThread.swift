@@ -20,6 +20,7 @@ struct CommentsThread: View {
     @State private var draft: String = ""
     @State private var posting: Bool = false
     @State private var replyingTo: WWAVComment? = nil
+    @State private var resolvedTarget: CommentTarget? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -38,7 +39,7 @@ struct CommentsThread: View {
                 }
                 .padding(.vertical, 6)
             } else if comments.isEmpty {
-                Text("no replies yet — be first.")
+                Text(commentTargets.isEmpty ? "replies available after sync." : "no replies yet — be first.")
                     .font(.wwav(12, weight: .light, italic: true))
                     .foregroundStyle(theme.muted)
                     .padding(.vertical, 6)
@@ -53,13 +54,14 @@ struct CommentsThread: View {
 
             composer.padding(.top, 6)
         }
-        .task { await loadComments() }
+        .task(id: commentTaskID) { await loadComments() }
     }
 
     // MARK: – Composer
 
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let repliesReady = !commentTargets.isEmpty
+        return VStack(alignment: .leading, spacing: 6) {
             if let target = replyingTo {
                 HStack(spacing: 6) {
                     Text("replying to @\(target.displayName)")
@@ -82,13 +84,14 @@ struct CommentsThread: View {
                 TextField(
                     "",
                     text: $draft,
-                    prompt: Text(replyingTo == nil ? "post your reply" : "tweet your reply…")
+                    prompt: Text(replyPrompt(repliesReady: repliesReady))
                         .foregroundStyle(theme.muted)
                 )
                 .font(.wwav(13, weight: .light, italic: true))
                 .foregroundStyle(theme.ink)
                 .submitLabel(.send)
                 .onSubmit { Task { await submit() } }
+                .disabled(!repliesReady)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(Capsule().fill(theme.sand.opacity(0.5)))
@@ -111,8 +114,8 @@ struct CommentsThread: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty || posting)
-                .opacity(draft.trimmingCharacters(in: .whitespaces).isEmpty ? 0.5 : 1)
+                .disabled(!repliesReady || draft.trimmingCharacters(in: .whitespaces).isEmpty || posting)
+                .opacity(!repliesReady || draft.trimmingCharacters(in: .whitespaces).isEmpty ? 0.5 : 1)
             }
         }
     }
@@ -122,6 +125,35 @@ struct CommentsThread: View {
     struct Node: Equatable {
         let comment: WWAVComment
         let children: [Node]
+    }
+
+    private struct CommentTarget: Equatable {
+        let id: Int
+        let type: String
+
+        var commentsPath: String { "/api/social/comments/\(id)?type=\(type)" }
+        var postPath: String { "/api/social/comment/\(id)?type=\(type)" }
+    }
+
+    private var commentTargets: [CommentTarget] {
+        if let uploadId = track.userUploadId {
+            return [CommentTarget(id: uploadId, type: "upload")]
+        }
+        guard let postId = track.remotePostId else { return [] }
+        return [
+            CommentTarget(id: postId, type: "post"),
+            CommentTarget(id: postId, type: "textpost"),
+            CommentTarget(id: postId, type: "textPost"),
+        ]
+    }
+
+    private var commentTaskID: String {
+        "\(track.kind.rawValue)-\(track.userUploadId ?? -1)-\(track.remotePostId ?? -1)"
+    }
+
+    private func replyPrompt(repliesReady: Bool) -> String {
+        guard repliesReady else { return "syncing replies…" }
+        return replyingTo == nil ? "post your reply" : "tweet your reply…"
     }
 
     private var threadedNodes: [Node] {
@@ -141,25 +173,31 @@ struct CommentsThread: View {
 
     @MainActor
     private func loadComments() async {
-        guard let uploadId = track.userUploadId else {
+        let targets = commentTargets
+        guard !targets.isEmpty else {
             loading = false
             return
         }
         loading = true
         defer { loading = false }
-        do {
-            let data = try await API.get("/api/social/comments/\(uploadId)?type=upload")
-            let decoded = try JSONDecoder().decode([WWAVComment].self, from: data)
-            comments = decoded
-        } catch {
-            print("[CommentsThread] load failed: \(error)")
+        for target in targets {
+            do {
+                let data = try await API.get(target.commentsPath)
+                let decoded = try JSONDecoder().decode([WWAVComment].self, from: data)
+                resolvedTarget = target
+                comments = decoded
+                return
+            } catch {
+                print("[CommentsThread] load failed for \(target.type): \(error)")
+            }
         }
     }
 
     @MainActor
     private func submit() async {
-        guard let token = auth.token,
-              let uploadId = track.userUploadId else { return }
+        guard let token = auth.token else { return }
+        let targets = resolvedTarget.map { [$0] } ?? commentTargets
+        guard !targets.isEmpty else { return }
         let trimmed = draft.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
         posting = true
@@ -168,17 +206,18 @@ struct CommentsThread: View {
         var body: [String: Any] = ["text": trimmed]
         if let target = replyingTo { body["parentId"] = target.id }
 
-        do {
-            let data = try await API.post(
-                "/api/social/comment/\(uploadId)?type=upload",
-                body: body, token: token
-            )
-            let posted = try JSONDecoder().decode(WWAVComment.self, from: data)
-            comments.append(posted)
-            draft = ""
-            replyingTo = nil
-        } catch {
-            print("[CommentsThread] post failed: \(error)")
+        for target in targets {
+            do {
+                let data = try await API.post(target.postPath, body: body, token: token)
+                let posted = try JSONDecoder().decode(WWAVComment.self, from: data)
+                resolvedTarget = target
+                comments.append(posted)
+                draft = ""
+                replyingTo = nil
+                return
+            } catch {
+                print("[CommentsThread] post failed for \(target.type): \(error)")
+            }
         }
     }
 }

@@ -15,9 +15,17 @@ final class AppNavigation: ObservableObject {
     @Published var activePost: Track?
     /// Whether an image post is currently expanded into a fullscreen viewer.
     @Published var imageViewerPost: Track?
+    /// Upload kind requested by another surface, such as the feed composer.
+    /// `UploadView` consumes and clears this when it becomes visible.
+    @Published var requestedUploadKind: PostKind?
 
     func goToPlay() {
         active = .play
+    }
+
+    func compose(_ kind: PostKind) {
+        requestedUploadKind = kind
+        active = .plus
     }
 
     /// Loads a music track into the stem engine and switches to the play tab.
@@ -71,6 +79,7 @@ final class AppNavigation: ObservableObject {
             library.incrementPlays(of: track.id)
         case .image:
             imageViewerPost = track
+            library.incrementPlays(of: track.id)
         case .text:
             // Text posts live entirely in the feed; tapping is a no-op.
             break

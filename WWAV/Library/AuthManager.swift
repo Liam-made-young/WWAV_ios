@@ -23,8 +23,7 @@ final class AuthManager: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         do {
-            let data = try await API.get("/api/auth/me", token: t)
-            user = try JSONDecoder().decode(RemoteUser.self, from: data)
+            user = try await API.client.me(token: t)
         } catch {
             // Token expired or invalid — clear it.
             token = nil
@@ -38,11 +37,7 @@ final class AuthManager: ObservableObject {
         error = nil
         defer { isLoading = false }
         do {
-            let data = try await API.post("/api/auth/login", body: [
-                "email": email,
-                "password": password,
-            ])
-            let resp = try JSONDecoder().decode(LoginResponse.self, from: data)
+            let resp = try await API.client.login(email: email, password: password)
             token = resp.token
             user = resp.user
             saveToKeychain(resp.token)

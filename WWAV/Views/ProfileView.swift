@@ -153,6 +153,12 @@ private struct ProfileTrackRow: View {
     let onEdit: () -> Void
     @Environment(\.theme) private var theme
 
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d"
+        return f
+    }()
+
     /// Posts become tappable as soon as they're ready. Music tracks are
     /// "ready" once the server confirms separation; image/video flip to
     /// `.ready` after upload completes; text posts are always ready.
@@ -244,6 +250,10 @@ private struct ProfileTrackRow: View {
             Text("\(Int(p*100))%")
                 .font(.wwav(10, weight: .light, italic: true))
                 .foregroundStyle(theme.muted)
+        } else if case .uploading(_, let p) = track.status {
+            Text("\(Int(p*100))%")
+                .font(.wwav(10, weight: .light, italic: true))
+                .foregroundStyle(theme.muted)
         } else if case .failed = track.status {
             Text("failed")
                 .font(.wwav(10, weight: .light, italic: true))
@@ -276,9 +286,7 @@ private struct ProfileTrackRow: View {
     }
 
     private func formatDate(_ d: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "MMM d"
-        return f.string(from: d).lowercased()
+        return Self.dateFormatter.string(from: d).lowercased()
     }
 }
 

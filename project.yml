@@ -56,3 +56,14 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_PREVIEWS: YES
         GENERATE_INFOPLIST_FILE: NO
+  WWAVTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: WWAVTests
+    dependencies:
+      - target: WWAV
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wwav.app.tests
+        GENERATE_INFOPLIST_FILE: YES

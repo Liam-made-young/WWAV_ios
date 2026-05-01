@@ -71,5 +71,6 @@ struct LocalEdit: Codable, Equatable {
 
 enum WWAVKeychainKeys {
     static let tombstones  = "wwav.tombstones.v1"      // Set<String> trackIds
+    static let postTombstones = "wwav.postTombstones.v1" // Set<Int> remote TextPost ids
     static let localEdits  = "wwav.localEdits.v1"      // [String: LocalEdit]
 }

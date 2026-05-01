@@ -1,5 +1,7 @@
 import SwiftUI
 
+private let feedTabLabels = ["for you", "following", "friends"]
+
 struct HomeView: View {
     @EnvironmentObject var library: TrackLibrary
     @EnvironmentObject var player: StemPlayerEngine
@@ -15,14 +17,20 @@ struct HomeView: View {
                 header
                 tabPicker
                 ScrollView {
-                    if library.feed.isEmpty {
-                        EmptyState(
-                            title: "no waves yet",
-                            body: "pull down to refresh, or drop a post from the + tab."
-                        )
-                        .frame(minHeight: 320)
-                    } else {
-                        LazyVStack(spacing: 0) {
+                    LazyVStack(spacing: 0) {
+                        FeedComposerCard()
+                            .padding(.horizontal, 24)
+                            .padding(.top, 14)
+                            .padding(.bottom, 4)
+                        SoftRule()
+
+                        if library.feed.isEmpty {
+                            EmptyState(
+                                title: "no waves yet",
+                                body: "pull down to refresh, or post from here."
+                            )
+                            .frame(minHeight: 320)
+                        } else {
                             ForEach(Array(library.feed.enumerated()), id: \.element.id) { idx, track in
                                 FeedItemView(track: track, accent: idx == 0) {
                                     nav.openPost(track, in: library, with: player)
@@ -32,8 +40,8 @@ struct HomeView: View {
                                 }
                             }
                         }
-                        .padding(.bottom, 12)
                     }
+                    .padding(.bottom, 12)
                 }
                 .refreshable {
                     await library.refresh(token: auth.token)
@@ -57,14 +65,13 @@ struct HomeView: View {
     }
 
     private var tabPicker: some View {
-        let labels = ["for you", "following", "friends"]
-        return HStack(spacing: 4) {
+        HStack(spacing: 4) {
             ForEach(0..<3, id: \.self) { i in
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { feedTab = i }
                 } label: {
                     VStack(spacing: 6) {
-                        Text(labels[i])
+                        Text(feedTabLabels[i])
                             .font(.wwav(13, weight: feedTab == i ? .medium : .light, italic: true))
                             .foregroundStyle(feedTab == i ? theme.ink : theme.muted)
                         Rectangle()
@@ -78,6 +85,170 @@ struct HomeView: View {
             }
         }
         .padding(.horizontal, 24)
+    }
+}
+
+private let feedComposerKinds: [PostKind] = [.text, .music, .image, .video]
+
+private struct FeedComposerCard: View {
+    @EnvironmentObject var library: TrackLibrary
+    @EnvironmentObject var auth: AuthManager
+    @EnvironmentObject var nav: AppNavigation
+    @Environment(\.theme) private var theme
+
+    @FocusState private var focused: Bool
+    @State private var selectedKind: PostKind = .text
+    @State private var draft: String = ""
+
+    private var trimmedDraft: String {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ProfileAvatar(url: auth.user?.profilePictureURL, size: 40)
+
+            VStack(alignment: .leading, spacing: 12) {
+                composerBody
+
+                HStack(spacing: 8) {
+                    ForEach(feedComposerKinds) { kind in
+                        kindButton(kind)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    actionButton
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(theme.sand.opacity(0.62))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(theme.muted.opacity(0.20), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private var composerBody: some View {
+        if selectedKind == .text {
+            ZStack(alignment: .topLeading) {
+                if draft.isEmpty {
+                    Text("what's happening?")
+                        .font(.wwav(16, weight: .light, italic: true))
+                        .foregroundStyle(theme.muted)
+                        .padding(.top, 8)
+                        .padding(.leading, 5)
+                }
+
+                TextEditor(text: $draft)
+                    .focused($focused)
+                    .scrollContentBackground(.hidden)
+                    .font(.wwav(16, weight: .light))
+                    .foregroundStyle(theme.ink)
+                    .frame(minHeight: 56, maxHeight: 116)
+                    .padding(.horizontal, -5)
+                    .padding(.vertical, -8)
+            }
+        } else {
+            HStack(spacing: 10) {
+                Image(systemName: iconName(for: selectedKind))
+                    .font(.system(size: 18, weight: .regular))
+                    .foregroundStyle(theme.accent)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(theme.muted.opacity(0.12)))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(selectedKind.label) post")
+                        .font(.wwav(16, weight: .medium, italic: true))
+                        .foregroundStyle(theme.ink)
+                    Text(selectedKind == .music ? "stem upload" : selectedKind == .image ? "photo set" : "video clip")
+                        .font(.wwav(12, weight: .light, italic: true))
+                        .foregroundStyle(theme.muted)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .frame(minHeight: 56)
+        }
+    }
+
+    private var actionButton: some View {
+        Button {
+            if selectedKind == .text {
+                submitText()
+            } else {
+                nav.compose(selectedKind)
+            }
+        } label: {
+            HStack(spacing: 5) {
+                if selectedKind != .text {
+                    Image(systemName: "arrow.up.forward")
+                        .font(.system(size: 10, weight: .medium))
+                }
+                Text(selectedKind == .text ? "post" : "open")
+                    .font(.wwav(11, weight: .regular, italic: true))
+                    .tracking(1.3)
+            }
+            .foregroundStyle(theme.glow)
+            .padding(.vertical, 7)
+            .padding(.horizontal, 13)
+            .background(
+                Capsule().fill(
+                    LinearGradient(
+                        colors: [theme.clay, theme.clayDeep],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                )
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(selectedKind == .text && trimmedDraft.isEmpty)
+        .opacity(selectedKind == .text && trimmedDraft.isEmpty ? 0.5 : 1)
+    }
+
+    private func kindButton(_ kind: PostKind) -> some View {
+        let active = selectedKind == kind
+        return Button {
+            withAnimation(.easeInOut(duration: 0.16)) {
+                selectedKind = kind
+            }
+            focused = kind == .text
+        } label: {
+            Image(systemName: iconName(for: kind))
+                .font(.system(size: 13, weight: active ? .semibold : .regular))
+                .foregroundStyle(active ? theme.glow : theme.muted)
+                .frame(width: 30, height: 30)
+                .background(
+                    Circle().fill(active ? theme.accent : theme.muted.opacity(0.10))
+                )
+                .overlay(
+                    Circle().stroke(theme.muted.opacity(active ? 0 : 0.20), lineWidth: 1)
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func submitText() {
+        let body = trimmedDraft
+        guard !body.isEmpty else { return }
+        _ = library.createTextPost(title: "", body: body, token: auth.token)
+        draft = ""
+        focused = false
+    }
+
+    private func iconName(for kind: PostKind) -> String {
+        switch kind {
+        case .music: return "music.note"
+        case .image: return "photo"
+        case .text: return "text.bubble"
+        case .video: return "play.rectangle"
+        }
     }
 }
 
@@ -215,6 +386,8 @@ struct FeedItemView: View {
                     .onTapGesture { onPlay() }
             } else if case .separating = track.status {
                 placeholderBox(text: "uploading images…")
+            } else if case .uploading = track.status {
+                placeholderBox(text: "uploading…")
             } else {
                 placeholderBox(text: "no images")
             }

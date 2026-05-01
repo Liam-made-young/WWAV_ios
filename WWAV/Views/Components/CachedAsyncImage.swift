@@ -14,6 +14,7 @@ import UIKit
 struct CachedAsyncImage<Placeholder: View>: View {
     let url: URL?
     var contentMode: ContentMode = .fill
+    var onImageLoad: (UIImage) -> Void = { _ in }
     @ViewBuilder let placeholder: () -> Placeholder
 
     @State private var image: UIImage?
@@ -49,7 +50,10 @@ struct CachedAsyncImage<Placeholder: View>: View {
         // 1. In-memory cache — instant.
         if let hit = ImageCache.shared.image(for: url) {
             await MainActor.run {
-                if self.generation == token { self.image = hit }
+                if self.generation == token {
+                    self.image = hit
+                    self.onImageLoad(hit)
+                }
             }
             return
         }
@@ -60,7 +64,10 @@ struct CachedAsyncImage<Placeholder: View>: View {
             guard let decoded = UIImage(data: data) else { return }
             ImageCache.shared.set(decoded, for: url)
             await MainActor.run {
-                if self.generation == token { self.image = decoded }
+                if self.generation == token {
+                    self.image = decoded
+                    self.onImageLoad(decoded)
+                }
             }
         } catch {
             // Quietly leave the placeholder showing — the next scroll-in

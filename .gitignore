@@ -8,6 +8,7 @@ xcuserdata/
 *.xcscmblueprint
 *.xccheckout
 DerivedData/
+build/
 *.moved-aside
 *.pbxuser
 !default.pbxuser

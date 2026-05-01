@@ -41,11 +41,55 @@ struct StemBundle: Codable, Equatable {
     }
 }
 
+enum UploadPhase: String, Codable, Equatable {
+    case compressing, saving, finalizing
+    var label: String { rawValue }
+}
+
 enum TrackStatus: Codable, Equatable {
     case ready
     case separating(Double)   // 0...1
+    case uploading(phase: UploadPhase, progress: Double)
     case failed(String)
     case sourceOnly
+}
+
+enum RemoteProcessingState: Equatable {
+    case ready
+    case processing(progress: Double)
+    case failed(String)
+    case unknown
+
+    init(serverStatus: String) {
+        switch serverStatus {
+        case "ready":
+            self = .ready
+        case "processing":
+            self = .processing(progress: 0.5)
+        case "failed":
+            self = .failed("server reported failed")
+        default:
+            self = .unknown
+        }
+    }
+
+    var trackStatus: TrackStatus {
+        switch self {
+        case .ready:
+            return .ready
+        case .processing(let progress):
+            return .separating(progress)
+        case .failed(let message):
+            return .failed(message)
+        case .unknown:
+            return .separating(0.0)
+        }
+    }
+
+    var isRenderableRemoteRow: Bool {
+        if case .ready = self { return true }
+        return false
+    }
 }
 
 /// One of four post kinds. `music` is the original stem-player upload; the
@@ -98,9 +142,15 @@ struct Track: Identifiable, Codable, Equatable {
     /// Each entry follows the same conventions as `coverArtUrl` (full URL,
     /// server-relative `/api/images/…`, or bare key).
     var imageUrls: [String]?
-    /// Local file URL for a `.video` post's media file. Video uploads are
-    /// stored client-side for now since the backend has no video pipeline.
+    /// Local or remote URL for the video file. Set to the server proxy URL
+    /// after the video is uploaded; falls back to a local file URL.
     var videoURL: URL?
+    /// Duration of the compressed video in seconds, set after VideoOptimizer runs.
+    var videoDuration: Double?
+    /// Server-side `TextPost.id` for image/text/video posts. Set after the
+    /// post is successfully created on the server. Used for metadata updates,
+    /// deletes, and refresh deduplication.
+    var remotePostId: Int?
     /// Optional text body for `.text` posts (also reusable as a long caption
     /// for image / video posts when present alongside `bio`).
     var textBody: String?
@@ -158,10 +208,10 @@ struct Track: Identifiable, Codable, Equatable {
             if FileManager.default.fileExists(atPath: raw) {
                 return URL(fileURLWithPath: raw)
             }
-            return URL(string: "\(API.base)\(raw)")
+            return URL(string: "\(AppEnvironment.current.apiBaseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")))\(raw)")
         }
         let filename = raw.split(separator: "/").last.map(String.init) ?? raw
-        return URL(string: "\(API.base)/api/images/\(filename)")
+        return URL(string: "\(AppEnvironment.current.apiBaseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/api/images/\(filename)")
     }
 
     // MARK: – Codable with backward compatibility
@@ -175,7 +225,7 @@ struct Track: Identifiable, Codable, Equatable {
         case id, kind, title, artist, handle, bio
         case sourceURL, sourceObjectKey, remoteTrackId, userUploadId
         case coverArtUrl, stems, stemObjectKeys
-        case imageUrls, videoURL, textBody
+        case imageUrls, videoURL, videoDuration, remotePostId, textBody
         case status, durationSeconds, createdAt
         case plays, loves, reposts, liked, reposted
     }
@@ -196,6 +246,8 @@ struct Track: Identifiable, Codable, Equatable {
         stemObjectKeys: [String: String]? = nil,
         imageUrls: [String]? = nil,
         videoURL: URL? = nil,
+        videoDuration: Double? = nil,
+        remotePostId: Int? = nil,
         textBody: String? = nil,
         status: TrackStatus,
         durationSeconds: Double,
@@ -221,6 +273,8 @@ struct Track: Identifiable, Codable, Equatable {
         self.stemObjectKeys = stemObjectKeys
         self.imageUrls = imageUrls
         self.videoURL = videoURL
+        self.videoDuration = videoDuration
+        self.remotePostId = remotePostId
         self.textBody = textBody
         self.status = status
         self.durationSeconds = durationSeconds
@@ -249,6 +303,8 @@ struct Track: Identifiable, Codable, Equatable {
         self.stemObjectKeys  = try c.decodeIfPresent([String: String].self, forKey: .stemObjectKeys)
         self.imageUrls       = try c.decodeIfPresent([String].self, forKey: .imageUrls)
         self.videoURL        = try c.decodeIfPresent(URL.self, forKey: .videoURL)
+        self.videoDuration   = try c.decodeIfPresent(Double.self, forKey: .videoDuration)
+        self.remotePostId    = try c.decodeIfPresent(Int.self, forKey: .remotePostId)
         self.textBody        = try c.decodeIfPresent(String.self, forKey: .textBody)
         self.status          = try c.decode(TrackStatus.self, forKey: .status)
         self.durationSeconds = try c.decode(Double.self, forKey: .durationSeconds)

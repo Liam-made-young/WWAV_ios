@@ -31,6 +31,10 @@ struct UploadView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .onAppear { consumeRequestedKind(animated: false) }
+        .onChange(of: nav.requestedUploadKind) { _, _ in
+            consumeRequestedKind(animated: true)
+        }
     }
 
     private var kindPicker: some View {
@@ -64,6 +68,16 @@ struct UploadView: View {
                 .buttonStyle(.plain)
             }
         }
+    }
+
+    private func consumeRequestedKind(animated: Bool) {
+        guard let requested = nav.requestedUploadKind else { return }
+        if animated {
+            withAnimation(.easeInOut(duration: 0.18)) { selectedKind = requested }
+        } else {
+            selectedKind = requested
+        }
+        nav.requestedUploadKind = nil
     }
 }
 
@@ -166,6 +180,12 @@ private struct BigCirclePickerScaffold<P: View>: View {
 
 // MARK: – Music upload (existing flow)
 
+private let audioTypes: [UTType] = {
+    var types: [UTType] = [.audio, .wav, .mp3, .mpeg4Audio, .aiff]
+    if let flac = UTType("public.flac") { types.append(flac) }
+    return types
+}()
+
 private struct MusicUploadForm: View {
     @EnvironmentObject var library: TrackLibrary
     @EnvironmentObject var nav: AppNavigation
@@ -206,12 +226,6 @@ private struct MusicUploadForm: View {
                 if title.isEmpty { title = url.deletingPathExtension().lastPathComponent }
             }
         }
-    }
-
-    private var audioTypes: [UTType] {
-        var types: [UTType] = [.audio, .wav, .mp3, .mpeg4Audio, .aiff]
-        if let flac = UTType("public.flac") { types.append(flac) }
-        return types
     }
 
     private var filled: some View {
@@ -336,6 +350,7 @@ private struct MusicUploadForm: View {
             case .failed(let msg):
                 Text("✕ \(msg)")
                     .font(.wwav(12, weight: .light)).foregroundStyle(Color.red.opacity(0.7))
+            case .uploading: EmptyView()
             case .sourceOnly: EmptyView()
             }
         }
@@ -475,6 +490,7 @@ private struct ImageUploadForm: View {
 
 private struct TextUploadForm: View {
     @EnvironmentObject var library: TrackLibrary
+    @EnvironmentObject var auth: AuthManager
     @Environment(\.theme) private var theme
 
     @State private var sheetOpen: Bool = false
@@ -501,7 +517,7 @@ private struct TextUploadForm: View {
         }
         .sheet(isPresented: $sheetOpen) {
             TextDetailsSheet { title, body in
-                _ = library.createTextPost(title: title, body: body)
+                _ = library.createTextPost(title: title, body: body, token: auth.token)
                 lastPostedAt = Date()
                 sheetOpen = false
             }
@@ -525,6 +541,12 @@ private struct VideoUploadForm: View {
     @State private var loadError: String?
     @State private var sheetOpen: Bool = false
     @State private var lastPostedAt: Date?
+    @State private var inFlightID: UUID?
+
+    private var inflightVideo: Track? {
+        guard let id = inFlightID else { return nil }
+        return library.myTracks.first(where: { $0.id == id })
+    }
 
     var body: some View {
         ZStack {
@@ -556,6 +578,26 @@ private struct VideoUploadForm: View {
                         .foregroundStyle(Color.red.opacity(0.8))
                         .padding(.horizontal, 24).padding(.bottom, 24)
                         .multilineTextAlignment(.center)
+                } else if let track = inflightVideo {
+                    switch track.status {
+                    case .uploading:
+                        UploadPhaseProgressRow(status: track.status)
+                            .padding(.horizontal, 28)
+                            .padding(.bottom, 24)
+                    case .ready:
+                        Text("✓ posted")
+                            .font(.wwav(13, weight: .light, italic: true))
+                            .foregroundStyle(theme.accent)
+                            .padding(.bottom, 24)
+                    case .failed(let msg):
+                        Text("✕ \(msg)")
+                            .font(.wwav(12, weight: .light, italic: true))
+                            .foregroundStyle(Color.red.opacity(0.8))
+                            .padding(.horizontal, 24).padding(.bottom, 24)
+                            .multilineTextAlignment(.center)
+                    default:
+                        EmptyView()
+                    }
                 } else if let posted = lastPostedAt, Date().timeIntervalSince(posted) < 6 {
                     Text("✓ posted")
                         .font(.wwav(13, weight: .light, italic: true))
@@ -578,7 +620,7 @@ private struct VideoUploadForm: View {
                 videoURL: videoURL,
                 onPost: { title, caption, coverData in
                     guard let url = videoURL else { return }
-                    _ = library.createVideoPost(
+                    inFlightID = library.createVideoPost(
                         videoURL: url, title: title, caption: caption,
                         coverImage: coverData, token: auth.token
                     )
@@ -938,8 +980,35 @@ private struct UploadProgressRow: View {
     let p: Double
     @Environment(\.theme) private var theme
     var body: some View {
+        UploadPhaseProgressRow(status: .separating(p))
+    }
+}
+
+/// Unified progress row for all upload phases — used by both music (separating)
+/// and video (compressing → saving → finalizing).
+struct UploadPhaseProgressRow: View {
+    let status: TrackStatus
+    @Environment(\.theme) private var theme
+
+    private var label: String {
+        switch status {
+        case .separating(let p): return "separating · \(Int(p * 100))%"
+        case .uploading(let phase, let p): return "\(phase.label) · \(Int(p * 100))%"
+        default: return ""
+        }
+    }
+
+    private var fraction: Double {
+        switch status {
+        case .separating(let p): return p
+        case .uploading(_, let p): return p
+        default: return 0
+        }
+    }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("uploading · \(Int(p * 100))%")
+            Text(label)
                 .font(.wwav(11, weight: .light, italic: true))
                 .foregroundStyle(theme.muted)
             GeometryReader { geo in
@@ -951,7 +1020,7 @@ private struct UploadProgressRow: View {
                                 colors: [theme.accent, theme.clayDeep],
                                 startPoint: .leading, endPoint: .trailing)
                         )
-                        .frame(width: max(0, geo.size.width * p))
+                        .frame(width: max(0, geo.size.width * fraction))
                 }
             }
             .frame(height: 3)
@@ -1038,15 +1107,19 @@ private enum SheetBox {
 
 private struct PickedFile: Equatable {
     let url: URL
-    var subtitle: String {
+    let subtitle: String
+
+    init(url: URL) {
+        self.url = url
         let attrs = (try? FileManager.default.attributesOfItem(atPath: url.path)) ?? [:]
         let bytes = (attrs[.size] as? Int64) ?? 0
         let mb = Double(bytes) / 1_048_576.0
         if mb < 1 {
             let kb = Double(bytes) / 1024.0
-            return String(format: "%.0f kb", kb)
+            self.subtitle = String(format: "%.0f kb", kb)
+        } else {
+            self.subtitle = String(format: "%.1f mb", mb)
         }
-        return String(format: "%.1f mb", mb)
     }
 }
 

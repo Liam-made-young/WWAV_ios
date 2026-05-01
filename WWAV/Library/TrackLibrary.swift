@@ -1,6 +1,63 @@
 import Foundation
 import Combine
 
+enum FeedRanking {
+    static func rank(_ tracks: [Track], referenceDate: Date = Date()) -> [Track] {
+        tracks.sorted { lhs, rhs in
+            let lhsScore = score(lhs, referenceDate: referenceDate)
+            let rhsScore = score(rhs, referenceDate: referenceDate)
+            if lhsScore != rhsScore { return lhsScore > rhsScore }
+            if lhs.plays != rhs.plays { return lhs.plays > rhs.plays }
+            return lhs.createdAt > rhs.createdAt
+        }
+    }
+
+    static func score(_ track: Track, referenceDate: Date = Date()) -> Double {
+        let ageHours = max(0, referenceDate.timeIntervalSince(track.createdAt) / 3600)
+        let views = Double(max(0, track.plays))
+        let socialProof = log1p(views)
+
+        // Fresh posts get a real audition window, then the boost fades.
+        let recency = 28 * exp(-ageHours / 36)
+        let firstDayOpportunity = max(0, 1 - (ageHours / 18)) * 10
+
+        // Fast early traction matters more than slow accumulated views.
+        let velocity = 30 * (socialProof / pow(ageHours + 2, 0.65))
+
+        // Old high-view posts still surface sometimes instead of aging out
+        // completely.
+        let evergreen = 4.5 * socialProof
+
+        // Small deterministic rotation prevents permanent ties and gives
+        // fresh low-view posts a little exploration without random UI jumps.
+        let daySalt = Int(referenceDate.timeIntervalSince1970 / 86_400)
+        let explorationWindow = ageHours <= 48 ? 5.0 : 2.0
+        let exploration = stableNoise(for: track.id, salt: daySalt) * explorationWindow
+
+        return recency + firstDayOpportunity + velocity + evergreen + exploration
+    }
+
+    private static func stableNoise(for id: UUID, salt: Int) -> Double {
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        func mix(_ byte: UInt8) {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+
+        withUnsafeBytes(of: id.uuid) { buffer in
+            for byte in buffer { mix(byte) }
+        }
+
+        var saltBits = UInt64(bitPattern: Int64(salt))
+        for _ in 0..<8 {
+            mix(UInt8(saltBits & 0xff))
+            saltBits >>= 8
+        }
+
+        return Double(hash % 10_000) / 10_000
+    }
+}
+
 /// Real, persisted track + profile store. No mock data.
 ///
 /// On first launch it generates one playable sample track (4 synthetic stems)
@@ -21,6 +78,10 @@ final class TrackLibrary: ObservableObject {
     /// Tombstone set for non-music posts (image/text/video) by their local
     /// UUID — those don't have a server-side trackId.
     @Published private(set) var deletedPostUUIDs: Set<UUID> = []
+    /// Tombstone set for server-backed image/text/video posts. This is the
+    /// reinstall-safe guard: remote rows get fresh local UUIDs on a clean
+    /// install, so UUID tombstones alone cannot prevent resurrection.
+    @Published private(set) var deletedRemotePostIds: Set<Int> = []
     /// Per-track local edits keyed by remote trackId. Title / bio / cover
     /// changes the user makes on this device are written here AND mirrored
     /// to the keychain, so they survive an app reinstall even if the
@@ -32,6 +93,7 @@ final class TrackLibrary: ObservableObject {
     let separator: StemSeparationService
 
     private let stateURL: URL
+    private let persistence: TrackLibraryPersistenceStore
 
     init(
         storage: StorageService = LocalDiskStorage(),
@@ -45,6 +107,7 @@ final class TrackLibrary: ObservableObject {
             appropriateFor: nil, create: true
         )) ?? URL(fileURLWithPath: NSTemporaryDirectory())
         self.stateURL = base.appendingPathComponent("wwav/library.json")
+        self.persistence = TrackLibraryPersistenceStore(url: stateURL)
 
         // One-time wipe of the pre-server-sync local library so old
         // half-broken/duplicate tracks don't haunt the feed forever. After
@@ -56,12 +119,13 @@ final class TrackLibrary: ObservableObject {
             UserDefaults.standard.set(true, forKey: migrationKey)
         }
 
-        let state = TrackLibrary.loadState(from: stateURL)
+        let state = persistence.load()
         self.profile = state.profile
         self.myTracks = state.myTracks
         self.feed = state.feed
         self.deletedTrackIds = state.deletedTrackIds
         self.deletedPostUUIDs = state.deletedPostUUIDs
+        self.deletedRemotePostIds = state.deletedRemotePostIds
         self.localEdits = state.localEdits
 
         // Keychain is the durable source of truth for tombstones + edits
@@ -71,6 +135,9 @@ final class TrackLibrary: ObservableObject {
         // an edit, regardless of which store was around.
         if let restoredTombstones = WWAVKeychain.json(Set<String>.self, for: WWAVKeychainKeys.tombstones) {
             self.deletedTrackIds.formUnion(restoredTombstones)
+        }
+        if let restoredPostTombstones = WWAVKeychain.json(Set<Int>.self, for: WWAVKeychainKeys.postTombstones) {
+            self.deletedRemotePostIds.formUnion(restoredPostTombstones)
         }
         if let restoredEdits = WWAVKeychain.json([String: LocalEdit].self, for: WWAVKeychainKeys.localEdits) {
             for (k, v) in restoredEdits {
@@ -93,11 +160,13 @@ final class TrackLibrary: ObservableObject {
         self.myTracks.removeAll { t in
             if self.deletedPostUUIDs.contains(t.id) { return true }
             if let tid = t.remoteTrackId, self.deletedTrackIds.contains(tid) { return true }
+            if let pid = t.remotePostId, self.deletedRemotePostIds.contains(pid) { return true }
             return false
         }
         self.feed.removeAll { t in
             if self.deletedPostUUIDs.contains(t.id) { return true }
             if let tid = t.remoteTrackId, self.deletedTrackIds.contains(tid) { return true }
+            if let pid = t.remotePostId, self.deletedRemotePostIds.contains(pid) { return true }
             return false
         }
 
@@ -332,19 +401,33 @@ final class TrackLibrary: ObservableObject {
                 $0.coverArtUrl = remoteUrls.first
                 $0.status = .ready
             }
+            // Create server record so the post survives reinstall. Only use
+            // platform URLs for the remote row; file:// fallbacks stay local
+            // and will be retried by `syncPendingRemotePosts`.
+            let platformUrls = remoteUrls.filter(Self.isPlatformAssetPath)
+            if let token, platformUrls.count == images.count {
+                let capturedTitle = title.isEmpty ? "image post" : title
+                if let postId = await Self.createRemotePost(
+                    kind: "image", title: capturedTitle, content: caption.isEmpty ? nil : caption,
+                    images: platformUrls, coverImageUrl: platformUrls.first, token: token
+                ) {
+                    self.update(id: id) { $0.remotePostId = postId }
+                    self.persist()
+                }
+            }
         }
         return id
     }
 
-    /// Creates a text-only post. Stays client-side until a backend endpoint exists.
     @discardableResult
-    func createTextPost(title: String, body: String) -> UUID {
+    func createTextPost(title: String, body: String, token: String? = nil) -> UUID {
         let id = UUID()
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalTitle = trimmedTitle.isEmpty ? "text post" : trimmedTitle
         let track = Track(
             id: id,
             kind: .text,
-            title: trimmedTitle.isEmpty ? "text post" : trimmedTitle,
+            title: finalTitle,
             artist: profile.name,
             handle: profile.handle,
             bio: "",
@@ -355,6 +438,17 @@ final class TrackLibrary: ObservableObject {
         myTracks.insert(track, at: 0)
         rebuildFeed()
         persist()
+        if let token {
+            Task { [weak self] in
+                guard let self else { return }
+                if let postId = await Self.createRemotePost(
+                    kind: "text", title: finalTitle, content: body, token: token
+                ) {
+                    self.update(id: id) { $0.remotePostId = postId }
+                    self.persist()
+                }
+            }
+        }
         return id
     }
 
@@ -377,7 +471,7 @@ final class TrackLibrary: ObservableObject {
             artist: profile.name,
             handle: profile.handle,
             bio: caption,
-            status: .separating(0.0),
+            status: .uploading(phase: .compressing, progress: 0),
             durationSeconds: 0
         )
         myTracks.insert(track, at: 0)
@@ -389,30 +483,85 @@ final class TrackLibrary: ObservableObject {
             do {
                 let scoped = videoURL.startAccessingSecurityScopedResource()
                 defer { if scoped { videoURL.stopAccessingSecurityScopedResource() } }
-                let ext = videoURL.pathExtension.isEmpty ? "mp4" : videoURL.pathExtension
-                let key = "uploads/\(id.uuidString)/video.\(ext)"
-                let cached = try await self.storage.putFile(
-                    at: videoURL, key: key, contentType: "video/mp4"
-                )
-                self.update(id: id) {
-                    $0.videoURL = cached
-                    $0.sourceObjectKey = key
-                    $0.status = .ready
+
+                // Phase 1: Compress to H.264 720p.
+                let out = try await VideoOptimizer.compress(source: videoURL) { [weak self] p in
+                    self?.update(id: id) { $0.status = .uploading(phase: .compressing, progress: p) }
                 }
 
-                if let img = coverImage, let token {
+                // Phase 2: Upload compressed file to S3 (or local fallback).
+                self.update(id: id) { $0.status = .uploading(phase: .saving, progress: 0) }
+                var rampProgress: Double = 0
+                let rampTask = Task { [weak self] in
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        guard !Task.isCancelled else { break }
+                        rampProgress = min(rampProgress + 0.05, 0.95)
+                        self?.update(id: id) { $0.status = .uploading(phase: .saving, progress: rampProgress) }
+                    }
+                }
+
+                var finalVideoURL: URL
+                var s3Key: String? = nil
+                if let token {
+                    // Try S3 upload for server persistence.
                     do {
-                        let coverPath = try await Self.uploadCoverImage(img, token: token)
-                        self.update(id: id) { $0.coverArtUrl = coverPath }
+                        let (signedURL, key) = try await Self.signVideoUpload(token: token)
+                        try await Self.putToS3(fileURL: out.url, signedURL: signedURL)
+                        finalVideoURL = URL(string: "\(API.base)/api/videos/\(key.dropFirst(7))")
+                            ?? out.url
+                        s3Key = key
                     } catch {
-                        print("[Library] video cover upload failed: \(error)")
-                        // Cache the cover locally if upload failed.
+                        print("[Library] S3 video upload failed, falling back to local: \(error)")
+                        let key = "uploads/\(id.uuidString)/video.mp4"
+                        finalVideoURL = (try? await self.storage.putFile(
+                            at: out.url, key: key, contentType: "video/mp4"
+                        )) ?? out.url
+                    }
+                } else {
+                    let key = "uploads/\(id.uuidString)/video.mp4"
+                    finalVideoURL = (try? await self.storage.putFile(
+                        at: out.url, key: key, contentType: "video/mp4"
+                    )) ?? out.url
+                }
+                rampTask.cancel()
+                try? FileManager.default.removeItem(at: out.url)
+
+                // Phase 3: Finalize — create server post record.
+                self.update(id: id) { $0.status = .uploading(phase: .finalizing, progress: 1.0) }
+
+                var coverPath: String? = nil
+                if let img = coverImage, let token {
+                    coverPath = try? await Self.uploadCoverImage(img, token: token)
+                    if coverPath == nil {
                         let coverKey = "uploads/\(id.uuidString)/cover.jpg"
                         if let local = try? await self.storage.put(img, key: coverKey, contentType: "image/jpeg") {
-                            self.update(id: id) { $0.coverArtUrl = local.absoluteString }
+                            coverPath = local.absoluteString
                         }
                     }
                 }
+
+                let capturedTitle = title.isEmpty ? "video" : title
+                let remoteCoverPath = coverPath.flatMap { Self.isPlatformAssetPath($0) ? $0 : nil }
+                if let token, let key = s3Key {
+                    if let postId = await Self.createRemotePost(
+                        kind: "video", title: capturedTitle,
+                        content: caption.isEmpty ? nil : caption,
+                        videoUrl: key, coverImageUrl: remoteCoverPath, token: token
+                    ) {
+                        self.update(id: id) { $0.remotePostId = postId }
+                    }
+                }
+
+                self.update(id: id) {
+                    $0.videoURL = finalVideoURL
+                    $0.sourceObjectKey = s3Key
+                    $0.videoDuration = out.duration
+                    $0.durationSeconds = out.duration
+                    $0.coverArtUrl = coverPath
+                    $0.status = .ready
+                }
+                self.persist()
             } catch {
                 self.markFailed(id: id, message: error.localizedDescription)
             }
@@ -440,18 +589,15 @@ final class TrackLibrary: ObservableObject {
             if let textBody { $0.textBody = textBody }
         }
 
-        // Persist the edit locally + keychain BEFORE the network call. That
-        // way even if the PUT fails (or the user kills the app mid-flight),
-        // the change still wins on next refresh and survives reinstall.
-        if let track = myTracks.first(where: { $0.id == id }),
-           track.kind == .music,
-           let trackId = track.remoteTrackId {
+        guard let track = myTracks.first(where: { $0.id == id }) else { return }
+        persist()
+
+        if track.kind == .music, let trackId = track.remoteTrackId {
             var edit = localEdits[trackId] ?? LocalEdit()
             edit.title = finalTitle
             edit.bio = bio
             localEdits[trackId] = edit
             persist()
-
             if let token {
                 Task {
                     do {
@@ -465,6 +611,12 @@ final class TrackLibrary: ObservableObject {
                         print("[Library] metadata push failed (local override stays): \(error)")
                     }
                 }
+            }
+        } else if track.kind != .music, let postId = track.remotePostId, let token {
+            Task {
+                var body: [String: Any] = ["title": finalTitle, "content": bio]
+                if let tb = textBody { body["content"] = tb }
+                _ = try? await API.request("/api/posts/\(postId)", method: "PATCH", body: body, token: token)
             }
         }
     }
@@ -513,6 +665,19 @@ final class TrackLibrary: ObservableObject {
                         print("[Library] cover metadata PUT failed (local override stays): \(error)")
                     }
                 }
+            } else if let track = self.myTracks.first(where: { $0.id == id }),
+                      track.kind != .music,
+                      let postId = track.remotePostId,
+                      let token,
+                      Self.isPlatformAssetPath(path) {
+                Task {
+                    _ = try? await API.request(
+                        "/api/posts/\(postId)",
+                        method: "PATCH",
+                        body: ["coverImageUrl": path],
+                        token: token
+                    )
+                }
             }
         }
     }
@@ -542,31 +707,83 @@ final class TrackLibrary: ObservableObject {
                 $0.imageUrls = newUrls
                 $0.coverArtUrl = newUrls.first ?? $0.coverArtUrl
             }
-            _ = track // silence unused
+            let platformUrls = newUrls.filter(Self.isPlatformAssetPath)
+            if let token, let postId = track.remotePostId, platformUrls.count == images.count {
+                _ = try? await API.request(
+                    "/api/posts/\(postId)",
+                    method: "PATCH",
+                    body: ["images": platformUrls, "coverImageUrl": platformUrls.first as Any],
+                    token: token
+                )
+            }
         }
     }
 
     /// Replaces the video file for a `.video` post.
-    func replaceVideo(id: UUID, videoURL: URL) {
-        guard let track = myTracks.first(where: { $0.id == id }), track.kind == .video else { return }
+    func replaceVideo(id: UUID, videoURL: URL, token: String? = nil) {
+        guard let track = myTracks.first(where: { $0.id == id && $0.kind == .video }) else { return }
         Task { [weak self] in
             guard let self else { return }
             do {
                 let scoped = videoURL.startAccessingSecurityScopedResource()
                 defer { if scoped { videoURL.stopAccessingSecurityScopedResource() } }
-                let ext = videoURL.pathExtension.isEmpty ? "mp4" : videoURL.pathExtension
-                let key = "uploads/\(id.uuidString)/video_\(Int(Date().timeIntervalSince1970)).\(ext)"
-                let cached = try await self.storage.putFile(
-                    at: videoURL, key: key, contentType: "video/mp4"
-                )
+
+                self.update(id: id) { $0.status = .uploading(phase: .compressing, progress: 0) }
+                let out = try await VideoOptimizer.compress(source: videoURL) { [weak self] p in
+                    self?.update(id: id) { $0.status = .uploading(phase: .compressing, progress: p) }
+                }
+
+                self.update(id: id) { $0.status = .uploading(phase: .saving, progress: 0) }
+                var rampProgress: Double = 0
+                let rampTask = Task { [weak self] in
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        guard !Task.isCancelled else { break }
+                        rampProgress = min(rampProgress + 0.05, 0.95)
+                        self?.update(id: id) { $0.status = .uploading(phase: .saving, progress: rampProgress) }
+                    }
+                }
+                var finalVideoURL: URL
+                var objectKey: String
+                if let token {
+                    do {
+                        let (signedURL, key) = try await Self.signVideoUpload(token: token)
+                        try await Self.putToS3(fileURL: out.url, signedURL: signedURL)
+                        objectKey = key
+                        let stripped = key.hasPrefix("videos/") ? String(key.dropFirst(7)) : key
+                        finalVideoURL = URL(string: "\(API.base)/api/videos/\(stripped)") ?? out.url
+                    } catch {
+                        print("[Library] remote video replace failed, falling back to local: \(error)")
+                        let key = "uploads/\(id.uuidString)/video_\(Int(Date().timeIntervalSince1970)).mp4"
+                        finalVideoURL = try await self.storage.putFile(at: out.url, key: key, contentType: "video/mp4")
+                        objectKey = key
+                    }
+                } else {
+                    let key = "uploads/\(id.uuidString)/video_\(Int(Date().timeIntervalSince1970)).mp4"
+                    finalVideoURL = try await self.storage.putFile(at: out.url, key: key, contentType: "video/mp4")
+                    objectKey = key
+                }
+                rampTask.cancel()
+                try? FileManager.default.removeItem(at: out.url)
+
                 self.update(id: id) {
-                    $0.videoURL = cached
-                    $0.sourceObjectKey = key
+                    $0.videoURL = finalVideoURL
+                    $0.sourceObjectKey = objectKey
+                    $0.videoDuration = out.duration
+                    $0.durationSeconds = out.duration
+                    $0.status = .ready
+                }
+                if let token, let postId = track.remotePostId, objectKey.hasPrefix("videos/") {
+                    _ = try? await API.request(
+                        "/api/posts/\(postId)",
+                        method: "PATCH",
+                        body: ["videoUrl": objectKey],
+                        token: token
+                    )
                 }
             } catch {
                 print("[Library] video replace failed: \(error)")
             }
-            _ = track
         }
     }
 
@@ -673,18 +890,25 @@ final class TrackLibrary: ObservableObject {
                 // is dead weight.
                 localEdits.removeValue(forKey: trackId)
             }
+            if let postId = target.remotePostId {
+                deletedRemotePostIds.insert(postId)
+            }
             // Always tombstone the local UUID too — for non-music posts it
             // is the only identifier, and for music posts it's a cheap
             // belt-and-braces guard against trackId-less duplicates.
             deletedPostUUIDs.insert(target.id)
 
-            // Fire-and-forget server delete for music uploads. Whether or
-            // not this succeeds, the tombstone keeps iOS clean.
-            if target.kind == .music,
-               let token,
-               let uploadId = target.userUploadId {
-                Task {
-                    await Self.deleteServerUpload(uploadId: uploadId, token: token)
+            // Fire-and-forget server delete. Music → UserUpload endpoint;
+            // image/text/video → TextPost endpoint.
+            if let token {
+                if target.kind == .music, let uploadId = target.userUploadId {
+                    Task { await Self.deleteServerUpload(uploadId: uploadId, token: token) }
+                } else if target.kind != .music, let postId = target.remotePostId {
+                    Task {
+                        try? await API.request(
+                            "/api/posts/\(postId)", method: "DELETE", token: token
+                        )
+                    }
                 }
             }
         }
@@ -760,6 +984,8 @@ final class TrackLibrary: ObservableObject {
 
     func incrementPlays(of id: UUID) {
         update(id: id) { $0.plays += 1 }
+        rebuildFeed()
+        persist()
     }
 
     // MARK: – Social actions
@@ -906,13 +1132,21 @@ final class TrackLibrary: ObservableObject {
     @MainActor
     func refresh(token: String?) async {
         guard let token else { return }
+        // Music uploads (Demucs pipeline)
         do {
-            let data = try await API.get("/api/user/uploads", token: token)
-            let remote = try JSONDecoder().decode([RemoteUpload].self, from: data)
+            let remote = try await API.client.userUploads(token: token)
             applyRemote(remote, token: token)
         } catch {
-            print("[Library] refresh failed: \(error)")
+            print("[Library] music refresh failed: \(error)")
         }
+        // Image / text / video posts (TextPost)
+        do {
+            let posts = try await API.client.userPosts(token: token)
+            applyRemotePosts(posts)
+        } catch {
+            print("[Library] posts refresh failed: \(error)")
+        }
+        await syncPendingRemotePosts(token: token)
     }
 
     private struct RemoteUpload: Decodable {
@@ -972,7 +1206,7 @@ final class TrackLibrary: ObservableObject {
         }
     }
 
-    private func applyRemote(_ remote: [RemoteUpload], token: String?) {
+    private func applyRemote(_ remote: [WWAVRemoteUpload], token: String?) {
         // Index existing local rows by their (now-stamped) remoteTrackId so
         // we can reuse local state — stems already cached, plays count,
         // liked/reposted toggles, locally-edited title — when the server
@@ -1015,18 +1249,13 @@ final class TrackLibrary: ObservableObject {
             if deletedTrackIds.contains(r.trackId) { continue }
             if deletedPostUUIDs.contains(uuidFromTrackId(r.trackId)) { continue }
 
-            let trackStatus: TrackStatus
-            switch r.status {
-            case "ready":      trackStatus = .ready
-            case "processing": trackStatus = .separating(0.5)
-            case "failed":     trackStatus = .failed("server reported failed")
-            default:           trackStatus = .separating(0.0)
-            }
+            let remoteState = RemoteProcessingState(serverStatus: r.status)
+            let trackStatus = remoteState.trackStatus
 
             // Skip non-ready server rows unless this device is mid-upload
             // for the same trackId. This is what hides web-app uploads
             // that never finished separation — the broken-link case.
-            if r.status != "ready" {
+            if !remoteState.isRenderableRemoteRow {
                 let local = localByTrackId[r.trackId]
                 let isOurInFlight: Bool = {
                     guard let local else { return false }
@@ -1054,6 +1283,9 @@ final class TrackLibrary: ObservableObject {
                 }
                 existing.userUploadId = r.id
                 existing.stemObjectKeys = stemKeys
+                if let plays = r.plays {
+                    existing.plays = max(existing.plays, plays)
+                }
 
                 // Server cover only fills in when the local row has none;
                 // anything else is overridden by `localEdits` below.
@@ -1081,7 +1313,8 @@ final class TrackLibrary: ObservableObject {
                     stemObjectKeys: stemKeys,
                     status: trackStatus,
                     durationSeconds: 0,
-                    createdAt: r.parsedCreatedAt ?? Date()
+                    createdAt: r.parsedCreatedAt ?? Date(),
+                    plays: r.plays ?? 0
                 )
                 rebuilt.append(new)
             }
@@ -1106,8 +1339,7 @@ final class TrackLibrary: ObservableObject {
             }
             // If the server's cover is missing or different from our edit,
             // queue a push so the server eventually catches up.
-            if let editedCover = edit.coverArtUrl, !editedCover.isEmpty,
-               (rebuilt[i].coverArtUrl ?? "") != "" {
+            if let editedCover = edit.coverArtUrl, !editedCover.isEmpty {
                 let serverHas = (remote.first(where: { $0.trackId == tid })?.coverArtUrl ?? "")
                 if serverHas != editedCover {
                     coversToPush.append((trackId: tid, path: editedCover))
@@ -1169,6 +1401,288 @@ final class TrackLibrary: ObservableObject {
         ))
     }
 
+    // MARK: – Remote posts (image / text / video)
+
+    private struct RemotePost: Decodable {
+        let id: Int
+        let kind: String?
+        let title: String?
+        let content: String?
+        let images: [String]?
+        let videoUrl: String?
+        let coverImageUrl: String?
+        let createdAtRaw: String?
+
+        var parsedCreatedAt: Date? {
+            guard let s = createdAtRaw else { return nil }
+            let withFrac = ISO8601DateFormatter()
+            withFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let d = withFrac.date(from: s) { return d }
+            let plain = ISO8601DateFormatter()
+            plain.formatOptions = [.withInternetDateTime]
+            return plain.date(from: s)
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case id, kind, title, content, images, videoUrl, coverImageUrl
+            case created_at, createdAt
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id           = try c.decode(Int.self, forKey: .id)
+            kind         = try c.decodeIfPresent(String.self, forKey: .kind)
+            title        = try c.decodeIfPresent(String.self, forKey: .title)
+            content      = try c.decodeIfPresent(String.self, forKey: .content)
+            images       = try c.decodeIfPresent([String].self, forKey: .images)
+            videoUrl     = try c.decodeIfPresent(String.self, forKey: .videoUrl)
+            coverImageUrl = try c.decodeIfPresent(String.self, forKey: .coverImageUrl)
+            createdAtRaw = (try? c.decode(String.self, forKey: .created_at))
+                ?? (try? c.decode(String.self, forKey: .createdAt))
+        }
+    }
+
+    private func applyRemotePosts(_ remotePosts: [WWAVRemotePost]) {
+        var localByPostId: [Int: Track] = [:]
+        for t in myTracks where t.kind != .music {
+            if let pid = t.remotePostId { localByPostId[pid] = t }
+        }
+
+        var rebuilt: [Track] = []
+        for r in remotePosts {
+            // Skip tombstoned posts
+            if deletedRemotePostIds.contains(r.id) { continue }
+            if let existing = localByPostId[r.id], deletedPostUUIDs.contains(existing.id) { continue }
+
+            let kind: PostKind = {
+                switch r.kind {
+                case "image": return .image
+                case "video": return .video
+                default: return .text
+                }
+            }()
+
+            if var existing = localByPostId[r.id] {
+                // Refresh existing local post from server, preserving in-flight state.
+                if case .uploading = existing.status { rebuilt.append(existing); continue }
+                existing.title = r.title ?? existing.title
+                existing.bio = r.content ?? existing.bio
+                if let plays = r.plays {
+                    existing.plays = max(existing.plays, plays)
+                }
+                if kind == .image, let imgs = r.images, !imgs.isEmpty {
+                    existing.imageUrls = imgs
+                    existing.coverArtUrl = r.coverImageUrl ?? imgs.first ?? existing.coverArtUrl
+                }
+                if kind == .video, let vKey = r.videoUrl {
+                    let stripped = vKey.hasPrefix("videos/") ? String(vKey.dropFirst(7)) : vKey
+                    existing.videoURL = URL(string: "\(API.base)/api/videos/\(stripped)")
+                    existing.coverArtUrl = r.coverImageUrl ?? existing.coverArtUrl
+                }
+                if kind == .text { existing.textBody = r.content ?? existing.textBody }
+                rebuilt.append(existing)
+            } else {
+                // Post only exists on server (fresh install / other device).
+                var t = Track(
+                    id: UUID(),
+                    kind: kind,
+                    title: r.title ?? (kind == .image ? "image post" : kind == .video ? "video" : "text post"),
+                    artist: profile.name,
+                    handle: profile.handle,
+                    bio: r.content ?? "",
+                    remotePostId: r.id,
+                    status: .ready,
+                    durationSeconds: 0,
+                    createdAt: r.parsedCreatedAt ?? Date(),
+                    plays: r.plays ?? 0
+                )
+                switch kind {
+                case .image:
+                    t.imageUrls = r.images
+                    t.coverArtUrl = r.coverImageUrl ?? r.images?.first
+                case .video:
+                    if let vKey = r.videoUrl {
+                        let stripped = vKey.hasPrefix("videos/") ? String(vKey.dropFirst(7)) : vKey
+                        t.videoURL = URL(string: "\(API.base)/api/videos/\(stripped)")
+                    }
+                    t.coverArtUrl = r.coverImageUrl
+                case .text:
+                    t.textBody = r.content
+                    t.coverArtUrl = r.coverImageUrl
+                default: break
+                }
+                rebuilt.append(t)
+            }
+        }
+
+        // Keep local-only posts (no remotePostId yet — in-flight or offline)
+        // and replace remotePostId-tracked ones with fresh server data.
+        let localOnly = myTracks.filter { t in
+            guard t.kind != .music else { return false }
+            return t.remotePostId == nil
+        }
+        let musicTracks = myTracks.filter { $0.kind == .music }
+        myTracks = musicTracks + localOnly + rebuilt
+        myTracks.sort { $0.createdAt > $1.createdAt }
+        rebuildFeed()
+        persist()
+    }
+
+    /// Publishes local-only image/text/video posts once the user is signed in.
+    /// This closes the offline/partial-upload gap: local rows remain visible
+    /// immediately, then become platform-backed as soon as their assets can be
+    /// uploaded and a `/api/posts` row can be created.
+    @MainActor
+    private func syncPendingRemotePosts(token: String) async {
+        let candidates = myTracks.filter { track in
+            guard track.kind != .music, track.remotePostId == nil else { return false }
+            return !deletedPostUUIDs.contains(track.id)
+        }
+
+        for track in candidates {
+            guard let postId = await publishLocalPost(track, token: token) else { continue }
+            update(id: track.id) { $0.remotePostId = postId }
+        }
+    }
+
+    private func publishLocalPost(_ track: Track, token: String) async -> Int? {
+        switch track.kind {
+        case .text:
+            return await Self.createRemotePost(
+                kind: "text",
+                title: track.title,
+                content: track.displayText,
+                token: token
+            )
+        case .image:
+            guard let uploaded = await uploadImageURLsForPlatform(track.imageUrls ?? [], token: token),
+                  !uploaded.isEmpty else { return nil }
+            return await Self.createRemotePost(
+                kind: "image",
+                title: track.title,
+                content: track.bio.isEmpty ? nil : track.bio,
+                images: uploaded,
+                coverImageUrl: uploaded.first,
+                token: token
+            )
+        case .video:
+            guard let videoURL = track.videoURL,
+                  let videoKey = await uploadVideoURLForPlatform(videoURL, token: token) else { return nil }
+            let cover = await uploadOptionalImageForPlatform(track.coverArtUrl, token: token)
+            return await Self.createRemotePost(
+                kind: "video",
+                title: track.title,
+                content: track.bio.isEmpty ? nil : track.bio,
+                videoUrl: videoKey,
+                coverImageUrl: cover,
+                token: token
+            )
+        case .music:
+            return nil
+        }
+    }
+
+    private func uploadImageURLsForPlatform(_ rawURLs: [String], token: String) async -> [String]? {
+        var uploaded: [String] = []
+        for raw in rawURLs {
+            if Self.isPlatformAssetPath(raw) {
+                uploaded.append(raw)
+                continue
+            }
+            guard let data = Self.dataFromLocalURLString(raw) else { return nil }
+            do {
+                uploaded.append(try await Self.uploadCoverImage(data, token: token))
+            } catch {
+                print("[Library] pending image upload failed: \(error)")
+                return nil
+            }
+        }
+        return uploaded
+    }
+
+    private func uploadOptionalImageForPlatform(_ raw: String?, token: String) async -> String? {
+        guard let raw, !raw.isEmpty else { return nil }
+        if Self.isPlatformAssetPath(raw) {
+            return raw
+        }
+        guard let data = Self.dataFromLocalURLString(raw) else { return nil }
+        return try? await Self.uploadCoverImage(data, token: token)
+    }
+
+    private func uploadVideoURLForPlatform(_ url: URL, token: String) async -> String? {
+        do {
+            let (signedURL, key) = try await Self.signVideoUpload(token: token)
+            try await Self.putToS3(fileURL: url, signedURL: signedURL)
+            return key
+        } catch {
+            print("[Library] pending video upload failed: \(error)")
+            return nil
+        }
+    }
+
+    private static func dataFromLocalURLString(_ raw: String) -> Data? {
+        if raw.hasPrefix("file://"), let url = URL(string: raw) {
+            return try? Data(contentsOf: url)
+        }
+        if FileManager.default.fileExists(atPath: raw) {
+            return try? Data(contentsOf: URL(fileURLWithPath: raw))
+        }
+        return nil
+    }
+
+    private static func isPlatformAssetPath(_ raw: String) -> Bool {
+        raw.hasPrefix("http://")
+            || raw.hasPrefix("https://")
+            || raw.hasPrefix("/api/images/")
+    }
+
+    // MARK: – Server post helpers
+
+    /// POSTs a new TextPost record and returns its server id.
+    private static func createRemotePost(
+        kind: String,
+        title: String,
+        content: String? = nil,
+        images: [String]? = nil,
+        videoUrl: String? = nil,
+        coverImageUrl: String? = nil,
+        token: String
+    ) async -> Int? {
+        var body: [String: Any] = ["kind": kind, "title": title]
+        if let content { body["content"] = content }
+        if let images  { body["images"]  = images  }
+        if let videoUrl     { body["videoUrl"]     = videoUrl     }
+        if let coverImageUrl { body["coverImageUrl"] = coverImageUrl }
+        struct Resp: Decodable { let id: Int }
+        do {
+            let data = try await API.post("/api/posts", body: body, token: token)
+            return try JSONDecoder().decode(Resp.self, from: data).id
+        } catch {
+            print("[Library] createRemotePost failed: \(error)")
+            return nil
+        }
+    }
+
+    /// Gets a presigned S3 URL for a video upload. Returns (signedURL, s3Key).
+    private static func signVideoUpload(token: String) async throws -> (URL, String) {
+        struct Resp: Decodable { let signedUrl: String; let s3Key: String }
+        let data = try await API.get("/api/upload/sign-video", token: token)
+        let resp = try JSONDecoder().decode(Resp.self, from: data)
+        guard let url = URL(string: resp.signedUrl) else { throw APIError.unknown }
+        return (url, resp.s3Key)
+    }
+
+    /// Uploads a local file directly to an S3 presigned URL via HTTP PUT.
+    private static func putToS3(fileURL: URL, signedURL: URL) async throws {
+        var req = URLRequest(url: signedURL)
+        req.httpMethod = "PUT"
+        req.setValue("video/mp4", forHTTPHeaderField: "Content-Type")
+        let (_, response) = try await URLSession.shared.upload(for: req, fromFile: fileURL)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw APIError.server((response as? HTTPURLResponse)?.statusCode ?? -1, nil)
+        }
+    }
+
     // MARK: – Internal mutations
 
     private func update(id: UUID, _ mutate: (inout Track) -> Void) {
@@ -1193,12 +1707,13 @@ final class TrackLibrary: ObservableObject {
         // The feed includes any post that's ready to display — music tracks
         // show stems, image/text/video posts always render once status is
         // ready. (Image / video flip to .ready after upload completes.)
-        feed = myTracks.filter {
+        let displayable = myTracks.filter {
             if case .ready = $0.status { return true }
             // Text posts default to .ready; this shouldn't filter them out.
             if $0.kind == .text { return true }
             return false
         }
+        feed = FeedRanking.rank(displayable)
     }
 
     // MARK: – Persistence
@@ -1213,21 +1728,24 @@ final class TrackLibrary: ObservableObject {
         // `decodeIfPresent` keeps older library.json files loadable.
         var deletedTrackIds: Set<String> = []
         var deletedPostUUIDs: Set<UUID> = []
+        var deletedRemotePostIds: Set<Int> = []
         var localEdits: [String: LocalEdit] = [:]
 
         enum CodingKeys: String, CodingKey {
             case profile, myTracks, feed
-            case deletedTrackIds, deletedPostUUIDs, localEdits
+            case deletedTrackIds, deletedPostUUIDs, deletedRemotePostIds, localEdits
         }
 
         init(profile: UserProfile, myTracks: [Track], feed: [Track],
              deletedTrackIds: Set<String> = [], deletedPostUUIDs: Set<UUID> = [],
+             deletedRemotePostIds: Set<Int> = [],
              localEdits: [String: LocalEdit] = [:]) {
             self.profile = profile
             self.myTracks = myTracks
             self.feed = feed
             self.deletedTrackIds = deletedTrackIds
             self.deletedPostUUIDs = deletedPostUUIDs
+            self.deletedRemotePostIds = deletedRemotePostIds
             self.localEdits = localEdits
         }
 
@@ -1238,6 +1756,7 @@ final class TrackLibrary: ObservableObject {
             self.feed = try c.decode([Track].self, forKey: .feed)
             self.deletedTrackIds = try c.decodeIfPresent(Set<String>.self, forKey: .deletedTrackIds) ?? []
             self.deletedPostUUIDs = try c.decodeIfPresent(Set<UUID>.self, forKey: .deletedPostUUIDs) ?? []
+            self.deletedRemotePostIds = try c.decodeIfPresent(Set<Int>.self, forKey: .deletedRemotePostIds) ?? []
             self.localEdits = try c.decodeIfPresent([String: LocalEdit].self, forKey: .localEdits) ?? [:]
         }
     }
@@ -1247,6 +1766,54 @@ final class TrackLibrary: ObservableObject {
     }
 
     private static func loadState(from url: URL) -> State {
+        TrackLibraryPersistenceStore(url: url).load()
+    }
+
+    @MainActor
+    private struct TrackLibraryPersistenceStore {
+        let url: URL
+
+        func load() -> State {
+            loadState(from: url)
+        }
+
+        func save(_ state: State, durableBits: DurableLibraryBits) {
+            if let data = try? JSONEncoder().encode(state) {
+                try? FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
+                try? data.write(to: url, options: .atomic)
+            }
+
+            WWAVKeychain.setJSON(durableBits.deletedTrackIds, for: WWAVKeychainKeys.tombstones)
+            WWAVKeychain.setJSON(durableBits.deletedRemotePostIds, for: WWAVKeychainKeys.postTombstones)
+            WWAVKeychain.setJSON(durableBits.localEdits, for: WWAVKeychainKeys.localEdits)
+        }
+
+        private func loadState(from url: URL) -> State {
+            let fallback = State(
+                profile: defaultProfile(),
+                myTracks: [],
+                feed: []
+            )
+            guard let data = try? Data(contentsOf: url),
+                  let decoded = try? JSONDecoder().decode(State.self, from: data) else {
+                return fallback
+            }
+            var cleaned = decoded
+            cleaned.myTracks.removeAll { TrackLibrary.isTombstoned($0, in: decoded) }
+            cleaned.feed.removeAll { TrackLibrary.isTombstoned($0, in: decoded) }
+            return cleaned
+        }
+    }
+
+    private struct DurableLibraryBits {
+        var deletedTrackIds: Set<String>
+        var deletedRemotePostIds: Set<Int>
+        var localEdits: [String: LocalEdit]
+    }
+
+    private static func legacyLoadState(from url: URL) -> State {
         let fallback = State(
             profile: defaultProfile(),
             myTracks: [],
@@ -1268,6 +1835,7 @@ final class TrackLibrary: ObservableObject {
     private static func isTombstoned(_ t: Track, in state: State) -> Bool {
         if state.deletedPostUUIDs.contains(t.id) { return true }
         if let tid = t.remoteTrackId, state.deletedTrackIds.contains(tid) { return true }
+        if let pid = t.remotePostId, state.deletedRemotePostIds.contains(pid) { return true }
         return false
     }
 
@@ -1275,19 +1843,16 @@ final class TrackLibrary: ObservableObject {
         let state = State(
             profile: profile, myTracks: myTracks, feed: feed,
             deletedTrackIds: deletedTrackIds, deletedPostUUIDs: deletedPostUUIDs,
+            deletedRemotePostIds: deletedRemotePostIds,
             localEdits: localEdits
         )
-        if let data = try? JSONEncoder().encode(state) {
-            try? FileManager.default.createDirectory(
-                at: stateURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        persistence.save(
+            state,
+            durableBits: DurableLibraryBits(
+                deletedTrackIds: deletedTrackIds,
+                deletedRemotePostIds: deletedRemotePostIds,
+                localEdits: localEdits
             )
-            try? data.write(to: stateURL, options: .atomic)
-        }
-
-        // Mirror the durable bits into the keychain so they survive an
-        // app reinstall. Application Support gets wiped on uninstall;
-        // keychain entries (kSecAttrAccessibleAfterFirstUnlock) don't.
-        WWAVKeychain.setJSON(deletedTrackIds, for: WWAVKeychainKeys.tombstones)
-        WWAVKeychain.setJSON(localEdits, for: WWAVKeychainKeys.localEdits)
+        )
     }
 }

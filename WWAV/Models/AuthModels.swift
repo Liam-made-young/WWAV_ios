@@ -19,11 +19,11 @@ struct RemoteUser: Codable, Equatable {
             return URL(string: raw)
         }
         if raw.hasPrefix("/") {
-            return URL(string: "\(API.base)\(raw)")
+            return URL(string: "\(AppEnvironment.current.apiBaseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")))\(raw)")
         }
         // Bare key like "profile_pictures/abc.jpg" — serve via /api/images/<filename>.
         let filename = raw.split(separator: "/").last.map(String.init) ?? raw
-        return URL(string: "\(API.base)/api/images/\(filename)")
+        return URL(string: "\(AppEnvironment.current.apiBaseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/api/images/\(filename)")
     }
 }
 

@@ -419,7 +419,7 @@ struct EditMetadataSheet: View {
             library.replaceAudio(id: track.id, sourceURL: newAudioURL, token: token)
         }
         if let newVideoURL, track.kind == .video {
-            library.replaceVideo(id: track.id, videoURL: newVideoURL)
+            library.replaceVideo(id: track.id, videoURL: newVideoURL, token: token)
         }
         if !newImageDatas.isEmpty, track.kind == .image {
             library.replaceImages(id: track.id, images: newImageDatas, token: token)

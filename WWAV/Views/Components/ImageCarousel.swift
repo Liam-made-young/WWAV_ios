@@ -1,40 +1,41 @@
 import SwiftUI
 
-/// Square horizontal-paging image carousel for the feed. Shows up to 10
-/// images, snaps page-by-page, and ALWAYS fits inside a 1:1 frame so wide
-/// or tall source photos can't break the feed layout — the carousel itself
-/// never grows beyond the column's width.
+/// Horizontal-paging image carousel for the feed. It uses each loaded
+/// image's natural aspect ratio, clamped to a sane feed range, so portraits
+/// do not take over the screen and panoramas do not collapse into slivers.
 ///
-/// Sizing trick: a flexible view like `TabView` with `.page` style ignores
-/// `.aspectRatio` modifiers and tries to claim its content's natural
-/// width, which is what was making wide photos blow out of the column.
-/// Wrapping a `Color.clear` in `.aspectRatio(1, .fit)` and overlaying the
-/// pager forces a real 1:1 frame, then `.clipped()` and `.clipShape` on
-/// the outside keep every pixel inside that frame.
+/// Sizing trick: a flexible view like `TabView` with `.page` style can
+/// ignore simple aspect-ratio modifiers and try to claim its content's
+/// natural width. Wrapping a `Color.clear` in the chosen aspect ratio and
+/// overlaying the pager forces a real frame; the outer clips keep every
+/// pixel inside the feed column.
 struct ImageCarousel: View {
     let urls: [URL]
     var cornerRadius: CGFloat = 16
     @Environment(\.theme) private var theme
     @State private var index: Int = 0
+    @State private var aspectRatios: [Int: CGFloat] = [:]
+
+    private var activeAspectRatio: CGFloat {
+        Self.feedAspectRatio(from: aspectRatios[index])
+    }
 
     var body: some View {
-        // Color.clear (a flexible view with no intrinsic size) wrapped in
-        // `.aspectRatio(.fit)` is the cheapest way to claim a square box
-        // within the parent's offered width — TabView/ScrollView would
-        // otherwise expand to their content's natural size.
         Color.clear
-            .aspectRatio(1, contentMode: .fit)
+            .aspectRatio(activeAspectRatio, contentMode: .fit)
             .overlay {
                 GeometryReader { geo in
-                    let side = min(geo.size.width, geo.size.height)
+                    let width = geo.size.width
+                    let height = geo.size.height
                     ZStack(alignment: .bottom) {
                         TabView(selection: $index) {
                             ForEach(Array(urls.enumerated()), id: \.offset) { i, url in
-                                page(for: url, side: side).tag(i)
+                                page(for: url, index: i, width: width, height: height)
+                                    .tag(i)
                             }
                         }
                         .tabViewStyle(.page(indexDisplayMode: .never))
-                        .frame(width: side, height: side)
+                        .frame(width: width, height: height)
                         .clipped()
 
                         if urls.count > 1 {
@@ -65,7 +66,7 @@ struct ImageCarousel: View {
                             .frame(maxHeight: .infinity, alignment: .top)
                         }
                     }
-                    .frame(width: side, height: side)
+                    .frame(width: width, height: height)
                 }
             }
             .frame(maxWidth: .infinity)        // never exceed parent column
@@ -75,19 +76,32 @@ struct ImageCarousel: View {
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .stroke(theme.muted.opacity(0.20), lineWidth: 1)
             )
+            .animation(.easeInOut(duration: 0.18), value: activeAspectRatio)
     }
 
-    private func page(for url: URL, side: CGFloat) -> some View {
+    private func page(for url: URL, index: Int, width: CGFloat, height: CGFloat) -> some View {
         ZStack {
             LinearGradient(
                 colors: [theme.clay.opacity(0.25), theme.clayDeep.opacity(0.15)],
                 startPoint: .topLeading, endPoint: .bottomTrailing
             )
-            CachedAsyncImage(url: url, contentMode: .fill) {
+            CachedAsyncImage(url: url, contentMode: .fit, onImageLoad: { image in
+                let rawRatio = image.size.height > 0 ? image.size.width / image.size.height : 1
+                aspectRatios[index] = rawRatio
+            }) {
                 Color.clear
             }
         }
-        .frame(width: side, height: side)
+        .frame(width: width, height: height)
         .clipped()
+    }
+
+    private static func feedAspectRatio(from raw: CGFloat?) -> CGFloat {
+        let fallback: CGFloat = 1
+        let ratio = raw ?? fallback
+        guard ratio.isFinite, ratio > 0 else { return fallback }
+        // Width / height. 4:5 is tall enough for portraits without making a
+        // single feed item dominate; 16:9 keeps wide images legible.
+        return min(max(ratio, 4.0 / 5.0), 16.0 / 9.0)
     }
 }
