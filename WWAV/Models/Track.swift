@@ -44,8 +44,17 @@ struct StemBundle: Codable, Equatable {
 enum TrackStatus: Codable, Equatable {
     case ready
     case separating(Double)   // 0...1
+    /// Video upload pipeline progress. Phases run compressing → saving →
+    /// finalizing. Music posts continue to use `.separating(_)`.
+    case uploading(phase: UploadPhase, progress: Double)
     case failed(String)
     case sourceOnly
+}
+
+/// Phases a `.video` post moves through after the user picks a file.
+enum UploadPhase: String, Codable, Equatable {
+    case compressing, saving, finalizing
+    var label: String { rawValue }
 }
 
 /// One of four post kinds. `music` is the original stem-player upload; the
@@ -101,6 +110,10 @@ struct Track: Identifiable, Codable, Equatable {
     /// Local file URL for a `.video` post's media file. Video uploads are
     /// stored client-side for now since the backend has no video pipeline.
     var videoURL: URL?
+    /// Duration of the posted video in seconds, captured from the asset
+    /// during the upload pipeline. Optional for backward compat with rows
+    /// posted before this field existed.
+    var videoDuration: Double?
     /// Optional text body for `.text` posts (also reusable as a long caption
     /// for image / video posts when present alongside `bio`).
     var textBody: String?
@@ -175,7 +188,7 @@ struct Track: Identifiable, Codable, Equatable {
         case id, kind, title, artist, handle, bio
         case sourceURL, sourceObjectKey, remoteTrackId, userUploadId
         case coverArtUrl, stems, stemObjectKeys
-        case imageUrls, videoURL, textBody
+        case imageUrls, videoURL, videoDuration, textBody
         case status, durationSeconds, createdAt
         case plays, loves, reposts, liked, reposted
     }
@@ -196,6 +209,7 @@ struct Track: Identifiable, Codable, Equatable {
         stemObjectKeys: [String: String]? = nil,
         imageUrls: [String]? = nil,
         videoURL: URL? = nil,
+        videoDuration: Double? = nil,
         textBody: String? = nil,
         status: TrackStatus,
         durationSeconds: Double,
@@ -221,6 +235,7 @@ struct Track: Identifiable, Codable, Equatable {
         self.stemObjectKeys = stemObjectKeys
         self.imageUrls = imageUrls
         self.videoURL = videoURL
+        self.videoDuration = videoDuration
         self.textBody = textBody
         self.status = status
         self.durationSeconds = durationSeconds
@@ -249,6 +264,7 @@ struct Track: Identifiable, Codable, Equatable {
         self.stemObjectKeys  = try c.decodeIfPresent([String: String].self, forKey: .stemObjectKeys)
         self.imageUrls       = try c.decodeIfPresent([String].self, forKey: .imageUrls)
         self.videoURL        = try c.decodeIfPresent(URL.self, forKey: .videoURL)
+        self.videoDuration   = try c.decodeIfPresent(Double.self, forKey: .videoDuration)
         self.textBody        = try c.decodeIfPresent(String.self, forKey: .textBody)
         self.status          = try c.decode(TrackStatus.self, forKey: .status)
         self.durationSeconds = try c.decode(Double.self, forKey: .durationSeconds)

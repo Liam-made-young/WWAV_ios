@@ -562,6 +562,12 @@ private struct VideoUploadForm: View {
                         .foregroundStyle(theme.accent)
                         .padding(.bottom, 24)
                 }
+                if let inflight = inflightVideo {
+                    UploadPhaseProgressRow(status: inflight.status)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 8)
+                        .padding(.bottom, 24)
+                }
             }
         }
         .onChange(of: videoItem) { _, item in
@@ -647,6 +653,14 @@ private struct VideoUploadForm: View {
         } catch {
             print("[Upload] Data fallback video load failed: \(error)")
             return nil
+        }
+    }
+
+    private var inflightVideo: Track? {
+        library.myTracks.first { track in
+            guard track.kind == .video else { return false }
+            if case .uploading = track.status { return true }
+            return false
         }
     }
 }
@@ -934,12 +948,36 @@ private struct UploadField<Content: View>: View {
     }
 }
 
-private struct UploadProgressRow: View {
-    let p: Double
+private struct UploadPhaseProgressRow: View {
+    let status: TrackStatus
     @Environment(\.theme) private var theme
+
+    private var phaseLabel: String {
+        switch status {
+        case .separating(let p):
+            return "uploading · \(Int(p * 100))%"
+        case .uploading(.compressing, let p):
+            return "compressing · \(Int(p * 100))%"
+        case .uploading(.saving, let p):
+            return "saving · \(Int(p * 100))%"
+        case .uploading(.finalizing, _):
+            return "finalizing"
+        default:
+            return "uploading"
+        }
+    }
+
+    private var fillFraction: Double {
+        switch status {
+        case .separating(let p): return p
+        case .uploading(_, let p): return p
+        default: return 0
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("uploading · \(Int(p * 100))%")
+            Text(phaseLabel)
                 .font(.wwav(11, weight: .light, italic: true))
                 .foregroundStyle(theme.muted)
             GeometryReader { geo in
@@ -951,12 +989,17 @@ private struct UploadProgressRow: View {
                                 colors: [theme.accent, theme.clayDeep],
                                 startPoint: .leading, endPoint: .trailing)
                         )
-                        .frame(width: max(0, geo.size.width * p))
+                        .frame(width: max(0, geo.size.width * fillFraction))
                 }
             }
             .frame(height: 3)
         }
     }
+}
+
+private struct UploadProgressRow: View {
+    let p: Double
+    var body: some View { UploadPhaseProgressRow(status: .separating(p)) }
 }
 
 private struct CoverPickerRow: View {

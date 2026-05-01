@@ -358,9 +358,9 @@ final class TrackLibrary: ObservableObject {
         return id
     }
 
-    /// Creates a video post — copies the file into local storage and
-    /// publishes a TikTok-style post that takes over the play screen when
-    /// tapped. Video uploads are local-only for now.
+    /// Creates a video post — compresses the video, copies the file into
+    /// local storage with phased progress reporting, and publishes a
+    /// TikTok-style post that takes over the play screen when tapped.
     @discardableResult
     func createVideoPost(
         videoURL: URL,
@@ -377,7 +377,7 @@ final class TrackLibrary: ObservableObject {
             artist: profile.name,
             handle: profile.handle,
             bio: caption,
-            status: .separating(0.0),
+            status: .uploading(phase: .compressing, progress: 0),
             durationSeconds: 0
         )
         myTracks.insert(track, at: 0)
@@ -387,19 +387,56 @@ final class TrackLibrary: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
+                // Keep security-scoped access as a belt-and-braces guard in case
+                // the URL originates from a Photos security-scoped bookmark in some
+                // future code path (both PickedVideo and tryDataFallback already write
+                // to NSTemporaryDirectory, so startAccessingSecurityScopedResource is a
+                // no-op there, but harmless).
                 let scoped = videoURL.startAccessingSecurityScopedResource()
                 defer { if scoped { videoURL.stopAccessingSecurityScopedResource() } }
-                let ext = videoURL.pathExtension.isEmpty ? "mp4" : videoURL.pathExtension
-                let key = "uploads/\(id.uuidString)/video.\(ext)"
+
+                // 1. Compress (or fast-copy) to an H.264 720p mp4 in the temp dir.
+                self.update(id: id) { $0.status = .uploading(phase: .compressing, progress: 0) }
+                let out = try await VideoOptimizer.compress(source: videoURL) { p in
+                    self.update(id: id) { $0.status = .uploading(phase: .compressing, progress: p) }
+                }
+
+                // 2. Switch to saving phase and drive a synthetic 0→0.95 ramp
+                //    while the storage write is in-flight.
+                self.update(id: id) { $0.status = .uploading(phase: .saving, progress: 0) }
+                var rampProgress: Double = 0
+                let rampTask = Task { [weak self] in
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 50_000_000) // 50 ms
+                        guard !Task.isCancelled else { break }
+                        rampProgress = min(rampProgress + 0.05, 0.95)
+                        self?.update(id: id) { $0.status = .uploading(phase: .saving, progress: rampProgress) }
+                    }
+                }
+                defer { rampTask.cancel() }
+
+                let key = "uploads/\(id.uuidString)/video.mp4"
                 let cached = try await self.storage.putFile(
-                    at: videoURL, key: key, contentType: "video/mp4"
+                    at: out.url, key: key, contentType: "video/mp4"
                 )
+
+                // 3. Storage write done — cancel ramp, move to finalizing.
+                rampTask.cancel()
+                self.update(id: id) { $0.status = .uploading(phase: .finalizing, progress: 1.0) }
+
+                // 4. Stamp all video metadata and mark ready.
                 self.update(id: id) {
                     $0.videoURL = cached
                     $0.sourceObjectKey = key
+                    $0.videoDuration = out.duration
+                    $0.durationSeconds = out.duration
                     $0.status = .ready
                 }
 
+                // 5. Clean up the temp export file produced by VideoOptimizer.
+                try? FileManager.default.removeItem(at: out.url)
+
+                // 6. Optionally upload cover image — non-fatal if it fails.
                 if let img = coverImage, let token {
                     do {
                         let coverPath = try await Self.uploadCoverImage(img, token: token)
@@ -546,27 +583,60 @@ final class TrackLibrary: ObservableObject {
         }
     }
 
-    /// Replaces the video file for a `.video` post.
+    /// Replaces the video file for a `.video` post — compresses the new
+    /// source and saves it with phased progress reporting.
     func replaceVideo(id: UUID, videoURL: URL) {
         guard let track = myTracks.first(where: { $0.id == id }), track.kind == .video else { return }
+        _ = track // silence unused-capture warning
         Task { [weak self] in
             guard let self else { return }
             do {
                 let scoped = videoURL.startAccessingSecurityScopedResource()
                 defer { if scoped { videoURL.stopAccessingSecurityScopedResource() } }
-                let ext = videoURL.pathExtension.isEmpty ? "mp4" : videoURL.pathExtension
-                let key = "uploads/\(id.uuidString)/video_\(Int(Date().timeIntervalSince1970)).\(ext)"
+
+                // 1. Compress phase.
+                self.update(id: id) { $0.status = .uploading(phase: .compressing, progress: 0) }
+                let out = try await VideoOptimizer.compress(source: videoURL) { p in
+                    self.update(id: id) { $0.status = .uploading(phase: .compressing, progress: p) }
+                }
+
+                // 2. Saving phase with synthetic progress ramp.
+                self.update(id: id) { $0.status = .uploading(phase: .saving, progress: 0) }
+                var rampProgress: Double = 0
+                let rampTask = Task { [weak self] in
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 50_000_000) // 50 ms
+                        guard !Task.isCancelled else { break }
+                        rampProgress = min(rampProgress + 0.05, 0.95)
+                        self?.update(id: id) { $0.status = .uploading(phase: .saving, progress: rampProgress) }
+                    }
+                }
+                defer { rampTask.cancel() }
+
+                let key = "uploads/\(id.uuidString)/video_\(Int(Date().timeIntervalSince1970)).mp4"
                 let cached = try await self.storage.putFile(
-                    at: videoURL, key: key, contentType: "video/mp4"
+                    at: out.url, key: key, contentType: "video/mp4"
                 )
+
+                // 3. Finalizing.
+                rampTask.cancel()
+                self.update(id: id) { $0.status = .uploading(phase: .finalizing, progress: 1.0) }
+
+                // 4. Stamp metadata and mark ready.
                 self.update(id: id) {
                     $0.videoURL = cached
                     $0.sourceObjectKey = key
+                    $0.videoDuration = out.duration
+                    $0.durationSeconds = out.duration
+                    $0.status = .ready
                 }
+
+                // 5. Clean up temp export file.
+                try? FileManager.default.removeItem(at: out.url)
             } catch {
+                self.update(id: id) { $0.status = .failed(error.localizedDescription) }
                 print("[Library] video replace failed: \(error)")
             }
-            _ = track
         }
     }
 
