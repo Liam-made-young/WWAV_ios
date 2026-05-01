@@ -71,7 +71,7 @@ struct ProfileView: View {
                     }
                     .padding(.horizontal, 24).padding(.top, 24)
 
-                    let tracks = sectionTab == 0 ? library.myTracks : []
+                    let tracks = sectionTab == 0 ? library.myPosts : []
                     if tracks.isEmpty {
                         VStack(spacing: 8) {
                             Text(emptyMessage(for: sectionTab))

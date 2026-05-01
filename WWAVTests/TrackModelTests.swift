@@ -29,6 +29,7 @@ final class TrackModelTests: XCTestCase {
           "originalName": "song.wav",
           "status": "ready",
           "track": { "cover_art_url": "/api/images/cover.jpg" },
+          "User": { "id": 2, "username": "liam_made_young", "profilePicture": "/api/images/avatar.jpg" },
           "created_at": "2026-05-01T12:34:56.000Z"
         }
         """.data(using: .utf8)!
@@ -36,9 +37,37 @@ final class TrackModelTests: XCTestCase {
         let upload = try JSONDecoder().decode(WWAVRemoteUpload.self, from: json)
 
         XCTAssertEqual(upload.id, 42)
+        XCTAssertNil(upload.publishedTrackId)
         XCTAssertEqual(upload.trackId, "track_abc")
         XCTAssertEqual(upload.coverArtUrl, "/api/images/cover.jpg")
+        XCTAssertEqual(upload.author?.id, 2)
+        XCTAssertEqual(upload.author?.displayName, "liam_made_young")
         XCTAssertNotNil(upload.parsedCreatedAt)
+    }
+
+    func testBrowseUploadDecodesPublishedAndUploadIds() throws {
+        let json = """
+        {
+          "id": 77,
+          "itemType": "single",
+          "trackId": "track_browse",
+          "title": "browse song",
+          "userUploadId": 41,
+          "uploaderId": 9,
+          "uploader": { "username": "LMY_testing" },
+          "playCount": 12
+        }
+        """.data(using: .utf8)!
+
+        let upload = try JSONDecoder().decode(WWAVRemoteUpload.self, from: json)
+
+        XCTAssertEqual(upload.id, 41)
+        XCTAssertEqual(upload.publishedTrackId, 77)
+        XCTAssertEqual(upload.originalName, "browse song")
+        XCTAssertEqual(upload.status, "ready")
+        XCTAssertEqual(upload.author?.id, 9)
+        XCTAssertEqual(upload.author?.displayName, "LMY_testing")
+        XCTAssertEqual(upload.plays, 12)
     }
 
     func testRemoteProcessingStateMapping() {
@@ -63,6 +92,26 @@ final class TrackModelTests: XCTestCase {
         let post = try JSONDecoder().decode(WWAVRemotePost.self, from: json)
 
         XCTAssertEqual(post.plays, 123)
+    }
+
+    func testRemotePostDecodesRootAuthorVariants() throws {
+        let json = """
+        {
+          "id": 8,
+          "kind": "text",
+          "title": "note",
+          "content": "hello",
+          "user_id": "9",
+          "handle": "@LMY_testing",
+          "profile_picture": "profile_pictures/testing.jpg"
+        }
+        """.data(using: .utf8)!
+
+        let post = try JSONDecoder().decode(WWAVRemotePost.self, from: json)
+
+        XCTAssertEqual(post.author?.id, 9)
+        XCTAssertEqual(post.author?.displayName, "LMY_testing")
+        XCTAssertEqual(post.author?.profilePicture, "profile_pictures/testing.jpg")
     }
 
     func testFeedRankingGivesFreshPostsAnAudition() {

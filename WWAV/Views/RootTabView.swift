@@ -18,8 +18,15 @@ struct RootTabView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                TabBar(active: $nav.active)
+                if !nav.hidesTabBar {
+                    TabBar(active: $nav.active)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
+        }
+        .animation(.easeInOut(duration: 0.22), value: nav.hidesTabBar)
+        .sheet(item: $nav.publicProfile) { route in
+            PublicProfileSheet(route: route)
         }
     }
 }

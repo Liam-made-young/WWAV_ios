@@ -20,7 +20,8 @@ struct CommentsThread: View {
     @State private var draft: String = ""
     @State private var posting: Bool = false
     @State private var replyingTo: WWAVComment? = nil
-    @State private var resolvedTarget: CommentTarget? = nil
+    @State private var resolvedEndpoint: CommentEndpoint? = nil
+    @State private var repliesUnavailable: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -39,7 +40,7 @@ struct CommentsThread: View {
                 }
                 .padding(.vertical, 6)
             } else if comments.isEmpty {
-                Text(commentTargets.isEmpty ? "replies available after sync." : "no replies yet — be first.")
+                Text(emptyMessage)
                     .font(.wwav(12, weight: .light, italic: true))
                     .foregroundStyle(theme.muted)
                     .padding(.vertical, 6)
@@ -60,7 +61,7 @@ struct CommentsThread: View {
     // MARK: – Composer
 
     private var composer: some View {
-        let repliesReady = !commentTargets.isEmpty
+        let repliesReady = !commentEndpoints.isEmpty
         return VStack(alignment: .leading, spacing: 6) {
             if let target = replyingTo {
                 HStack(spacing: 6) {
@@ -127,33 +128,138 @@ struct CommentsThread: View {
         let children: [Node]
     }
 
-    private struct CommentTarget: Equatable {
-        let id: Int
-        let type: String
-
-        var commentsPath: String { "/api/social/comments/\(id)?type=\(type)" }
-        var postPath: String { "/api/social/comment/\(id)?type=\(type)" }
+    private struct CommentEndpoint: Equatable {
+        let label: String
+        let commentsPath: String
+        let postPath: String
     }
 
-    private var commentTargets: [CommentTarget] {
+    private struct CommentListEnvelope: Decodable {
+        let values: [WWAVComment]
+
+        enum CodingKeys: String, CodingKey {
+            case comments, data, results, items, replies
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            for key in [CodingKeys.comments, .data, .results, .items, .replies] {
+                if let values = try? c.decode([WWAVComment].self, forKey: key) {
+                    self.values = values
+                    return
+                }
+                if let nested = try? c.decode(CommentListEnvelope.self, forKey: key) {
+                    self.values = nested.values
+                    return
+                }
+            }
+            self.values = []
+        }
+    }
+
+    private struct CommentEnvelope: Decodable {
+        let value: WWAVComment?
+
+        enum CodingKeys: String, CodingKey {
+            case comment, data, result, item, reply
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            value = (try? c.decode(WWAVComment.self, forKey: .comment))
+                ?? (try? c.decode(WWAVComment.self, forKey: .data))
+                ?? (try? c.decode(WWAVComment.self, forKey: .result))
+                ?? (try? c.decode(WWAVComment.self, forKey: .item))
+                ?? (try? c.decode(WWAVComment.self, forKey: .reply))
+        }
+    }
+
+    private var commentEndpoints: [CommentEndpoint] {
+        if track.kind == .music {
+            var endpoints: [CommentEndpoint] = []
+            if let uploadId = track.userUploadId {
+                endpoints.append(
+                    CommentEndpoint(
+                        label: "upload",
+                        commentsPath: "/api/social/comments/\(uploadId)?type=upload",
+                        postPath: "/api/social/comment/\(uploadId)?type=upload"
+                    )
+                )
+            }
+            if let publishedId = track.publishedTrackId {
+                endpoints.append(
+                    CommentEndpoint(
+                        label: "published",
+                        commentsPath: "/api/social/comments/\(publishedId)?type=published",
+                        postPath: "/api/social/comment/\(publishedId)?type=published"
+                    )
+                )
+            }
+            if !endpoints.isEmpty { return endpoints }
+        }
+
         if let uploadId = track.userUploadId {
-            return [CommentTarget(id: uploadId, type: "upload")]
+            return [
+                CommentEndpoint(
+                    label: "upload",
+                    commentsPath: "/api/social/comments/\(uploadId)?type=upload",
+                    postPath: "/api/social/comment/\(uploadId)?type=upload"
+                ),
+            ]
         }
         guard let postId = track.remotePostId else { return [] }
-        return [
-            CommentTarget(id: postId, type: "post"),
-            CommentTarget(id: postId, type: "textpost"),
-            CommentTarget(id: postId, type: "textPost"),
+
+        var endpoints: [CommentEndpoint] = [
+            CommentEndpoint(
+                label: "post-social",
+                commentsPath: "/api/posts/\(postId)/social",
+                postPath: "/api/social/comment/\(postId)?type=post"
+            ),
+            CommentEndpoint(
+                label: "posts",
+                commentsPath: "/api/posts/\(postId)/comments",
+                postPath: "/api/posts/\(postId)/comments"
+            ),
+            CommentEndpoint(
+                label: "post",
+                commentsPath: "/api/post/\(postId)/comments",
+                postPath: "/api/post/\(postId)/comments"
+            ),
+            CommentEndpoint(
+                label: "comments-post",
+                commentsPath: "/api/comments/post/\(postId)",
+                postPath: "/api/comments/post/\(postId)"
+            ),
+            CommentEndpoint(
+                label: "text-posts",
+                commentsPath: "/api/text-posts/\(postId)/comments",
+                postPath: "/api/text-posts/\(postId)/comments"
+            ),
         ]
+        for type in ["post", "textpost", "textPost"] {
+            endpoints.append(
+                CommentEndpoint(
+                    label: "social-\(type)",
+                    commentsPath: "/api/social/comments/\(postId)?type=\(type)",
+                    postPath: "/api/social/comment/\(postId)?type=\(type)"
+                )
+            )
+        }
+        return endpoints
     }
 
     private var commentTaskID: String {
-        "\(track.kind.rawValue)-\(track.userUploadId ?? -1)-\(track.remotePostId ?? -1)"
+        "\(track.kind.rawValue)-\(track.userUploadId ?? -1)-\(track.publishedTrackId ?? -1)-\(track.remotePostId ?? -1)"
     }
 
     private func replyPrompt(repliesReady: Bool) -> String {
         guard repliesReady else { return "syncing replies…" }
         return replyingTo == nil ? "post your reply" : "tweet your reply…"
+    }
+
+    private var emptyMessage: String {
+        guard !commentEndpoints.isEmpty else { return "replies available after sync." }
+        return repliesUnavailable ? "no replies loaded yet — try replying." : "no replies yet — be first."
     }
 
     private var threadedNodes: [Node] {
@@ -173,52 +279,102 @@ struct CommentsThread: View {
 
     @MainActor
     private func loadComments() async {
-        let targets = commentTargets
-        guard !targets.isEmpty else {
+        let endpoints = commentEndpoints
+        guard !endpoints.isEmpty else {
             loading = false
+            repliesUnavailable = false
             return
         }
         loading = true
+        repliesUnavailable = false
         defer { loading = false }
-        for target in targets {
+        for endpoint in endpoints {
             do {
-                let data = try await API.get(target.commentsPath)
-                let decoded = try JSONDecoder().decode([WWAVComment].self, from: data)
-                resolvedTarget = target
+                let data = try await API.get(endpoint.commentsPath, token: auth.token)
+                let decoded = try Self.decodeCommentList(data)
+                resolvedEndpoint = endpoint
                 comments = decoded
                 return
             } catch {
-                print("[CommentsThread] load failed for \(target.type): \(error)")
+                print("[CommentsThread] load failed for \(endpoint.label): \(error)")
             }
         }
+        repliesUnavailable = true
     }
 
     @MainActor
     private func submit() async {
         guard let token = auth.token else { return }
-        let targets = resolvedTarget.map { [$0] } ?? commentTargets
-        guard !targets.isEmpty else { return }
+        let endpoints = resolvedEndpoint.map { [$0] } ?? commentEndpoints
+        guard !endpoints.isEmpty else { return }
         let trimmed = draft.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
         posting = true
         defer { posting = false }
 
-        var body: [String: Any] = ["text": trimmed]
-        if let target = replyingTo { body["parentId"] = target.id }
+        let parentId = replyingTo?.id
 
-        for target in targets {
-            do {
-                let data = try await API.post(target.postPath, body: body, token: token)
-                let posted = try JSONDecoder().decode(WWAVComment.self, from: data)
-                resolvedTarget = target
-                comments.append(posted)
-                draft = ""
-                replyingTo = nil
-                return
-            } catch {
-                print("[CommentsThread] post failed for \(target.type): \(error)")
+        for endpoint in endpoints {
+            for key in ["text", "content", "body", "comment"] {
+                var body: [String: Any] = [key: trimmed]
+                if let parentId {
+                    body["parentId"] = parentId
+                    body["parent_id"] = parentId
+                }
+
+                do {
+                    let data = try await API.post(endpoint.postPath, body: body, token: token)
+                    let posted = Self.decodePostedComment(data)
+                        ?? localComment(text: trimmed, parentId: parentId)
+                    resolvedEndpoint = endpoint
+                    repliesUnavailable = false
+                    comments.append(posted)
+                    draft = ""
+                    replyingTo = nil
+                    return
+                } catch {
+                    print("[CommentsThread] post failed for \(endpoint.label)/\(key): \(error)")
+                }
             }
         }
+    }
+
+    private static func decodeCommentList(_ data: Data) throws -> [WWAVComment] {
+        guard !data.isEmpty else { return [] }
+        let decoder = JSONDecoder()
+        if let comments = try? decoder.decode([WWAVComment].self, from: data) {
+            return comments
+        }
+        return try decoder.decode(CommentListEnvelope.self, from: data).values
+    }
+
+    private static func decodePostedComment(_ data: Data) -> WWAVComment? {
+        guard !data.isEmpty else { return nil }
+        let decoder = JSONDecoder()
+        if let comment = try? decoder.decode(WWAVComment.self, from: data) {
+            return comment
+        }
+        if let wrapped = try? decoder.decode(CommentEnvelope.self, from: data) {
+            return wrapped.value
+        }
+        if let list = try? decodeCommentList(data) {
+            return list.first
+        }
+        return nil
+    }
+
+    private func localComment(text: String, parentId: Int?) -> WWAVComment {
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let localId = -Int(Date().timeIntervalSince1970 * 1000)
+        return WWAVComment(
+            id: localId,
+            text: text,
+            userId: auth.user?.id,
+            username: auth.user?.username,
+            profilePicture: auth.user?.profilePicture,
+            createdAt: stamp,
+            parentId: parentId
+        )
     }
 }
 

@@ -13,9 +13,10 @@ struct WWAVComment: Codable, Identifiable, Equatable {
     let parentId: Int?
 
     enum RootCodingKeys: String, CodingKey {
-        case id, text, userId, parentId
+        case id, text, content, body, userId, parentId
         case createdAt
         case created_at
+        case username, handle, profilePicture, profile_picture, avatar, avatarUrl
         case User
     }
 
@@ -26,7 +27,10 @@ struct WWAVComment: Codable, Identifiable, Equatable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: RootCodingKeys.self)
         id = try c.decode(Int.self, forKey: .id)
-        text = try c.decode(String.self, forKey: .text)
+        text = (try? c.decode(String.self, forKey: .text))
+            ?? (try? c.decode(String.self, forKey: .content))
+            ?? (try? c.decode(String.self, forKey: .body))
+            ?? ""
         userId = try? c.decode(Int.self, forKey: .userId)
         parentId = try? c.decode(Int.self, forKey: .parentId)
         createdAt = (try? c.decode(String.self, forKey: .createdAt))
@@ -36,9 +40,31 @@ struct WWAVComment: Codable, Identifiable, Equatable {
             username = try? nested.decode(String.self, forKey: .username)
             profilePicture = try? nested.decode(String.self, forKey: .profilePicture)
         } else {
-            username = nil
-            profilePicture = nil
+            username = (try? c.decode(String.self, forKey: .username))
+                ?? (try? c.decode(String.self, forKey: .handle))
+            profilePicture = (try? c.decode(String.self, forKey: .profilePicture))
+                ?? (try? c.decode(String.self, forKey: .profile_picture))
+                ?? (try? c.decode(String.self, forKey: .avatar))
+                ?? (try? c.decode(String.self, forKey: .avatarUrl))
         }
+    }
+
+    init(
+        id: Int,
+        text: String,
+        userId: Int? = nil,
+        username: String? = nil,
+        profilePicture: String? = nil,
+        createdAt: String? = nil,
+        parentId: Int? = nil
+    ) {
+        self.id = id
+        self.text = text
+        self.userId = userId
+        self.username = username
+        self.profilePicture = profilePicture
+        self.createdAt = createdAt
+        self.parentId = parentId
     }
 
     func encode(to encoder: Encoder) throws {

@@ -193,9 +193,40 @@ final class TrackLibrary: ObservableObject {
 
     // MARK: – Derived counters (no fake data, computed live)
 
-    var trackCount: Int { myTracks.count }
-    var totalPlays: Int { myTracks.reduce(0) { $0 + $1.plays } }
-    var totalLoves: Int { myTracks.reduce(0) { $0 + $1.loves } }
+    var myPosts: [Track] {
+        myTracks.filter(isAuthoredByCurrentUser).sorted { $0.createdAt > $1.createdAt }
+    }
+
+    var trackCount: Int { myPosts.count }
+    var totalPlays: Int { myPosts.reduce(0) { $0 + $1.plays } }
+    var totalLoves: Int { myPosts.reduce(0) { $0 + $1.loves } }
+
+    func posts(for route: PublicProfileRoute) -> [Track] {
+        posts(authorUserId: route.authorUserId, handle: route.handle)
+    }
+
+    func posts(authorUserId: Int?, handle: String) -> [Track] {
+        let normalizedHandle = handle.normalizedHandle
+        var seen: Set<UUID> = []
+        let pool = (feed + myTracks).filter { track in
+            guard seen.insert(track.id).inserted else { return false }
+            if let authorUserId, let trackAuthorId = track.authorUserId {
+                return authorUserId == trackAuthorId
+            }
+            guard !normalizedHandle.isEmpty else { return false }
+            return track.handle.normalizedHandle == normalizedHandle
+                || track.artist.normalizedHandle == normalizedHandle
+        }
+        return pool.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    func isAuthoredByCurrentUser(_ track: Track) -> Bool {
+        if let currentId = profile.remoteUserId, let authorId = track.authorUserId {
+            return currentId == authorId
+        }
+        guard track.authorUserId == nil else { return false }
+        return track.handle.lowercased() == profile.handle.lowercased()
+    }
 
     // MARK: – Profile editing
 
@@ -212,10 +243,38 @@ final class TrackLibrary: ObservableObject {
     /// the app shell when auth state changes so uploads + the profile screen
     /// reflect the same identity.
     func syncProfile(from remote: RemoteUser) {
+        profile.remoteUserId = remote.id
         profile.name = remote.username
         profile.handle = remote.username
         if let bio = remote.bio, !bio.isEmpty { profile.bio = bio }
+        profile.profilePicture = remote.profilePicture
         persist()
+    }
+
+    private var currentAuthor: WWAVRemoteAuthor {
+        WWAVRemoteAuthor(
+            id: profile.remoteUserId,
+            username: profile.handle.isEmpty ? profile.name : profile.handle,
+            profilePicture: profile.profilePicture
+        )
+    }
+
+    private func applyAuthor(_ author: WWAVRemoteAuthor?, to track: inout Track) {
+        guard let author, author.hasIdentity else { return }
+        if let name = author.displayName {
+            track.artist = name
+            track.handle = name
+        }
+        if let id = author.id {
+            track.authorUserId = id
+        }
+        if let picture = author.profilePicture, !picture.isEmpty {
+            track.authorProfilePicture = picture
+        }
+    }
+
+    private func authorName(_ author: WWAVRemoteAuthor?) -> String {
+        author?.displayName ?? "wwav user"
     }
 
     /// Begins a music upload: copies the source into storage, kicks off Demucs,
@@ -237,6 +296,8 @@ final class TrackLibrary: ObservableObject {
             title: title.isEmpty ? "untitled" : title,
             artist: profile.name,
             handle: profile.handle,
+            authorUserId: profile.remoteUserId,
+            authorProfilePicture: profile.profilePicture,
             bio: bio,
             sourceURL: nil,
             sourceObjectKey: nil,
@@ -357,6 +418,8 @@ final class TrackLibrary: ObservableObject {
             title: title.isEmpty ? "image post" : title,
             artist: profile.name,
             handle: profile.handle,
+            authorUserId: profile.remoteUserId,
+            authorProfilePicture: profile.profilePicture,
             bio: caption,
             imageUrls: nil,
             status: .separating(0.0),
@@ -430,6 +493,8 @@ final class TrackLibrary: ObservableObject {
             title: finalTitle,
             artist: profile.name,
             handle: profile.handle,
+            authorUserId: profile.remoteUserId,
+            authorProfilePicture: profile.profilePicture,
             bio: "",
             textBody: body,
             status: .ready,
@@ -470,6 +535,8 @@ final class TrackLibrary: ObservableObject {
             title: title.isEmpty ? "video" : title,
             artist: profile.name,
             handle: profile.handle,
+            authorUserId: profile.remoteUserId,
+            authorProfilePicture: profile.profilePicture,
             bio: caption,
             status: .uploading(phase: .compressing, progress: 0),
             durationSeconds: 0
@@ -996,7 +1063,20 @@ final class TrackLibrary: ObservableObject {
     /// request didn't actually go through.
     @MainActor
     func toggleLike(track: Track, token: String?) async {
-        // Local-only posts (image/text/video without a userUploadId) just
+        if track.kind != .music, let postId = track.remotePostId, let token {
+            await toggleRemotePostLike(track: track, postId: postId, token: token)
+            return
+        }
+
+        if track.kind == .music,
+           track.userUploadId == nil,
+           let publishedTrackId = track.publishedTrackId,
+           let token {
+            await toggleRemotePublishedLike(track: track, publishedTrackId: publishedTrackId, token: token)
+            return
+        }
+
+        // Local-only posts (image/text/video without a remote post id) just
         // toggle in-memory.
         if track.kind != .music || track.userUploadId == nil {
             let prev = track.liked
@@ -1040,6 +1120,74 @@ final class TrackLibrary: ObservableObject {
             }
             print("[Library] toggleLike failed: \(error)")
         }
+    }
+
+    @MainActor
+    private func toggleRemotePublishedLike(track: Track, publishedTrackId: Int, token: String) async {
+        let prevLiked = track.liked
+        let prevLoves = track.loves
+        update(id: track.id) {
+            $0.liked = !prevLiked
+            $0.loves = max(0, prevLoves + (prevLiked ? -1 : 1))
+        }
+
+        struct Resp: Decodable { let liked: Bool }
+        do {
+            let data = try await API.post(
+                "/api/social/like/\(publishedTrackId)?type=published",
+                token: token
+            )
+            let resp = try JSONDecoder().decode(Resp.self, from: data)
+            update(id: track.id) {
+                if $0.liked != resp.liked {
+                    $0.liked = resp.liked
+                    $0.loves = max(0, prevLoves + (resp.liked ? 1 : 0)
+                                              - (prevLiked ? 1 : 0))
+                }
+            }
+        } catch {
+            update(id: track.id) {
+                $0.liked = prevLiked
+                $0.loves = prevLoves
+            }
+            print("[Library] published like failed: \(error)")
+        }
+    }
+
+    @MainActor
+    private func toggleRemotePostLike(track: Track, postId: Int, token: String) async {
+        let prevLiked = track.liked
+        let prevLoves = track.loves
+        update(id: track.id) {
+            $0.liked = !prevLiked
+            $0.loves = max(0, prevLoves + (prevLiked ? -1 : 1))
+        }
+
+        struct Resp: Decodable { let liked: Bool }
+        let candidateTypes = ["post", "textpost", "textPost"]
+        for type in candidateTypes {
+            do {
+                let data = try await API.post(
+                    "/api/social/like/\(postId)?type=\(type)",
+                    token: token
+                )
+                let resp = try JSONDecoder().decode(Resp.self, from: data)
+                update(id: track.id) {
+                    if $0.liked != resp.liked {
+                        $0.liked = resp.liked
+                        $0.loves = max(0, prevLoves + (resp.liked ? 1 : 0)
+                                                  - (prevLiked ? 1 : 0))
+                    }
+                }
+                return
+            } catch {
+                continue
+            }
+        }
+
+        // Keep the local optimistic value if the backend hasn't exposed post
+        // likes yet; comments still use the server-backed post id.
+        print("[Library] post like endpoint unavailable for post \(postId)")
     }
 
     /// Local-only repost toggle. The backend doesn't have a repost endpoint
@@ -1117,11 +1265,10 @@ final class TrackLibrary: ObservableObject {
 
     // MARK: – Server sync
     //
-    // The mi-wwav.com backend is the source of truth for uploaded music tracks.
-    // Image/text/video posts are local-only for now and survive refresh.
-    // `refresh(token:)` fetches `/api/user/uploads` and reconciles with the
-    // local cache so a fresh build on a new device immediately sees your
-    // upload history.
+    // The mi-wwav.com backend is the source of truth for social content.
+    // `refresh(token:)` prefers global app-wide endpoints so Home is a real
+    // multi-user feed, then falls back to user-scoped endpoints if the server
+    // has not deployed the global route yet.
 
     /// Pulls the user's uploads from the server and merges with local state.
     /// - Local copies of in-flight (`.separating`) uploads are preserved so a
@@ -1134,17 +1281,29 @@ final class TrackLibrary: ObservableObject {
         guard let token else { return }
         // Music uploads (Demucs pipeline)
         do {
-            let remote = try await API.client.userUploads(token: token)
-            applyRemote(remote, token: token)
+            let remote = try await API.client.globalUploads(token: token)
+            applyRemote(remote, token: token, fallbackAuthor: currentAuthor)
         } catch {
-            print("[Library] music refresh failed: \(error)")
+            print("[Library] global music refresh failed, falling back to user uploads: \(error)")
+            do {
+                let remote = try await API.client.userUploads(token: token)
+                applyRemote(remote, token: token, fallbackAuthor: currentAuthor)
+            } catch {
+                print("[Library] music refresh failed: \(error)")
+            }
         }
         // Image / text / video posts (TextPost)
         do {
-            let posts = try await API.client.userPosts(token: token)
-            applyRemotePosts(posts)
+            let posts = try await API.client.globalPosts(token: token)
+            applyRemotePosts(posts, fallbackAuthor: currentAuthor)
         } catch {
-            print("[Library] posts refresh failed: \(error)")
+            print("[Library] global posts refresh failed, falling back to user posts: \(error)")
+            do {
+                let posts = try await API.client.userPosts(token: token)
+                applyRemotePosts(posts, fallbackAuthor: currentAuthor)
+            } catch {
+                print("[Library] posts refresh failed: \(error)")
+            }
         }
         await syncPendingRemotePosts(token: token)
     }
@@ -1206,7 +1365,11 @@ final class TrackLibrary: ObservableObject {
         }
     }
 
-    private func applyRemote(_ remote: [WWAVRemoteUpload], token: String?) {
+    private func applyRemote(
+        _ remote: [WWAVRemoteUpload],
+        token: String?,
+        fallbackAuthor: WWAVRemoteAuthor?
+    ) {
         // Index existing local rows by their (now-stamped) remoteTrackId so
         // we can reuse local state — stems already cached, plays count,
         // liked/reposted toggles, locally-edited title — when the server
@@ -1282,7 +1445,9 @@ final class TrackLibrary: ObservableObject {
                     existing.status = trackStatus
                 }
                 existing.userUploadId = r.id
+                existing.publishedTrackId = r.publishedTrackId
                 existing.stemObjectKeys = stemKeys
+                applyAuthor(r.author ?? fallbackAuthor, to: &existing)
                 if let plays = r.plays {
                     existing.plays = max(existing.plays, plays)
                 }
@@ -1297,17 +1462,22 @@ final class TrackLibrary: ObservableObject {
             } else {
                 // Brand new from server.
                 let id = uuidFromTrackId(r.trackId)
+                let author = r.author ?? fallbackAuthor
+                let name = authorName(author)
                 let new = Track(
                     id: id,
                     kind: .music,
                     title: cleanedDisplayTitle(from: r.originalName),
-                    artist: profile.name,
-                    handle: profile.handle,
+                    artist: name,
+                    handle: name,
+                    authorUserId: author?.id,
+                    authorProfilePicture: author?.profilePicture,
                     bio: "",
                     sourceURL: nil,
                     sourceObjectKey: "stems/\(r.trackId)",
                     remoteTrackId: r.trackId,
                     userUploadId: r.id,
+                    publishedTrackId: r.publishedTrackId,
                     coverArtUrl: r.coverArtUrl,
                     stems: nil,
                     stemObjectKeys: stemKeys,
@@ -1442,7 +1612,10 @@ final class TrackLibrary: ObservableObject {
         }
     }
 
-    private func applyRemotePosts(_ remotePosts: [WWAVRemotePost]) {
+    private func applyRemotePosts(
+        _ remotePosts: [WWAVRemotePost],
+        fallbackAuthor: WWAVRemoteAuthor?
+    ) {
         var localByPostId: [Int: Track] = [:]
         for t in myTracks where t.kind != .music {
             if let pid = t.remotePostId { localByPostId[pid] = t }
@@ -1467,6 +1640,7 @@ final class TrackLibrary: ObservableObject {
                 if case .uploading = existing.status { rebuilt.append(existing); continue }
                 existing.title = r.title ?? existing.title
                 existing.bio = r.content ?? existing.bio
+                applyAuthor(r.author ?? fallbackAuthor, to: &existing)
                 if let plays = r.plays {
                     existing.plays = max(existing.plays, plays)
                 }
@@ -1483,12 +1657,16 @@ final class TrackLibrary: ObservableObject {
                 rebuilt.append(existing)
             } else {
                 // Post only exists on server (fresh install / other device).
+                let author = r.author ?? fallbackAuthor
+                let name = authorName(author)
                 var t = Track(
                     id: UUID(),
                     kind: kind,
                     title: r.title ?? (kind == .image ? "image post" : kind == .video ? "video" : "text post"),
-                    artist: profile.name,
-                    handle: profile.handle,
+                    artist: name,
+                    handle: name,
+                    authorUserId: author?.id,
+                    authorProfilePicture: author?.profilePicture,
                     bio: r.content ?? "",
                     remotePostId: r.id,
                     status: .ready,
@@ -1854,5 +2032,13 @@ final class TrackLibrary: ObservableObject {
                 localEdits: localEdits
             )
         )
+    }
+}
+
+private extension String {
+    var normalizedHandle: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+            .lowercased()
     }
 }

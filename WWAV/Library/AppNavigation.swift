@@ -1,6 +1,22 @@
 import Foundation
 import Combine
 
+struct PublicProfileRoute: Identifiable, Equatable {
+    let authorUserId: Int?
+    let handle: String
+    let displayName: String
+    let profilePicture: String?
+
+    var id: String {
+        if let authorUserId { return "user-\(authorUserId)" }
+        return "handle-\(handle.normalizedHandle)"
+    }
+
+    var profilePictureURL: URL? {
+        Track.resolveImageURL(profilePicture)
+    }
+}
+
 /// Single source of truth for the active tab. Any view can call
 /// `nav.openPost(track, in: library, with: player)` to:
 ///   1. start the right kind of playback for the post (stems for music,
@@ -18,6 +34,12 @@ final class AppNavigation: ObservableObject {
     /// Upload kind requested by another surface, such as the feed composer.
     /// `UploadView` consumes and clears this when it becomes visible.
     @Published var requestedUploadKind: PostKind?
+    /// Public author profile shown from feed/search/video surfaces.
+    @Published var publicProfile: PublicProfileRoute?
+
+    var hidesTabBar: Bool {
+        active == .play && activePost?.kind == .video
+    }
 
     func goToPlay() {
         active = .play
@@ -26,6 +48,21 @@ final class AppNavigation: ObservableObject {
     func compose(_ kind: PostKind) {
         requestedUploadKind = kind
         active = .plus
+    }
+
+    func openProfile(for track: Track) {
+        publicProfile = PublicProfileRoute(
+            authorUserId: track.authorUserId,
+            handle: track.handle.normalizedHandle,
+            displayName: track.artist,
+            profilePicture: track.authorProfilePicture
+        )
+    }
+
+    func closeActivePost() {
+        activePost = nil
+        imageViewerPost = nil
+        active = .home
     }
 
     /// Loads a music track into the stem engine and switches to the play tab.
@@ -84,5 +121,13 @@ final class AppNavigation: ObservableObject {
             // Text posts live entirely in the feed; tapping is a no-op.
             break
         }
+    }
+}
+
+private extension String {
+    var normalizedHandle: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+            .lowercased()
     }
 }

@@ -5,11 +5,21 @@ import Combine
 struct VideoPostPlayer: View {
     let post: Track
     @Environment(\.theme) private var theme
+    @EnvironmentObject var library: TrackLibrary
+    @EnvironmentObject var auth: AuthManager
+    @EnvironmentObject var nav: AppNavigation
     @StateObject private var controller: VideoController
+    @State private var showingComments: Bool = false
 
     init(post: Track) {
         self.post = post
         _controller = StateObject(wrappedValue: VideoController(url: post.videoURL))
+    }
+
+    private var currentPost: Track {
+        library.feed.first(where: { $0.id == post.id })
+            ?? library.myTracks.first(where: { $0.id == post.id })
+            ?? post
     }
 
     var body: some View {
@@ -19,6 +29,24 @@ struct VideoPostPlayer: View {
             if let player = controller.player {
                 VideoLayerView(player: player)
                     .ignoresSafeArea()
+                    .overlay(alignment: .top) {
+                        LinearGradient(
+                            colors: [.black.opacity(0.72), .clear],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                        .frame(height: 180)
+                        .allowsHitTesting(false)
+                        .ignoresSafeArea(edges: .top)
+                    }
+                    .overlay(alignment: .bottom) {
+                        LinearGradient(
+                            colors: [.clear, .black.opacity(0.84)],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                        .frame(height: 320)
+                        .allowsHitTesting(false)
+                        .ignoresSafeArea(edges: .bottom)
+                    }
             } else {
                 unavailableView
             }
@@ -31,7 +59,7 @@ struct VideoPostPlayer: View {
                 if controller.isScrubbing {
                     scrubTimecode.transition(.opacity)
                 }
-                if controller.chromeVisible {
+                if controller.chromeVisible || showingComments {
                     chrome.transition(.opacity)
                 }
             }
@@ -41,6 +69,7 @@ struct VideoPostPlayer: View {
         .animation(.easeInOut(duration: 0.20), value: controller.isBuffering)
         .animation(.easeInOut(duration: 0.18), value: controller.seekFeedback)
         .animation(.easeInOut(duration: 0.18), value: controller.isScrubbing)
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: showingComments)
         .onAppear { controller.play() }
         .onDisappear { controller.stop() }
     }
@@ -182,72 +211,245 @@ struct VideoPostPlayer: View {
         .allowsHitTesting(false)
     }
 
-    // MARK: – Glassy chrome overlay
+    // MARK: – Social video chrome
 
     private var chrome: some View {
-        VStack {
-            Spacer()
-            bottomPanel
+        ZStack {
+            topBar
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+
+            sideActionRail
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                .padding(.trailing, 16)
+                .padding(.bottom, 122)
+
+            VStack {
+                Spacer()
+                bottomPanel
+            }
+
+            if showingComments {
+                commentsDrawer
+            }
         }
-        .ignoresSafeArea(edges: .bottom)
+        .ignoresSafeArea(edges: [.top, .bottom])
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 12) {
+            Button {
+                nav.closeActivePost()
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 40, height: 40)
+                    .background(Circle().fill(.black.opacity(0.34)))
+                    .overlay(Circle().stroke(.white.opacity(0.16), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                nav.openProfile(for: currentPost)
+            } label: {
+                HStack(spacing: 9) {
+                    ProfileAvatar(url: currentPost.authorProfilePictureURL, size: 30)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(currentPost.artist)
+                            .font(.wwav(12, weight: .medium))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Text("@\(currentPost.handle)")
+                            .font(.wwav(10, weight: .light))
+                            .foregroundStyle(.white.opacity(0.68))
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.vertical, 6)
+                .padding(.horizontal, 8)
+                .background(Capsule().fill(.black.opacity(0.30)))
+                .overlay(Capsule().stroke(.white.opacity(0.14), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 54)
+    }
+
+    private var sideActionRail: some View {
+        VStack(spacing: 16) {
+            Button {
+                nav.openProfile(for: currentPost)
+            } label: {
+                ProfileAvatar(url: currentPost.authorProfilePictureURL, size: 46)
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 18, height: 18)
+                            .background(Circle().fill(theme.accent))
+                            .overlay(Circle().stroke(.black.opacity(0.45), lineWidth: 1))
+                            .offset(x: 1, y: 2)
+                    }
+            }
+            .buttonStyle(.plain)
+
+            videoAction(
+                icon: currentPost.liked ? "heart.fill" : "heart",
+                label: short(currentPost.loves),
+                active: currentPost.liked,
+                activeColor: Color.red.opacity(0.92)
+            ) {
+                Task { await library.toggleLike(track: currentPost, token: auth.token) }
+            }
+
+            videoAction(
+                icon: showingComments ? "bubble.left.fill" : "bubble.left",
+                label: "reply",
+                active: showingComments,
+                activeColor: theme.accent
+            ) {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                    showingComments.toggle()
+                    controller.revealChrome()
+                }
+            }
+
+            videoAction(
+                icon: "arrow.2.squarepath",
+                label: short(currentPost.reposts),
+                active: currentPost.reposted,
+                activeColor: theme.accent
+            ) {
+                library.toggleRepost(track: currentPost)
+                controller.revealChrome()
+            }
+
+            Button {
+                controller.toggleMute()
+                controller.revealChrome()
+            } label: {
+                VStack(spacing: 5) {
+                    Image(systemName: controller.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(Circle().fill(.black.opacity(0.34)))
+                        .overlay(Circle().stroke(.white.opacity(0.13), lineWidth: 1))
+                    Text(controller.isMuted ? "muted" : "sound")
+                        .font(.wwav(9, weight: .medium))
+                        .tracking(0.8)
+                        .foregroundStyle(.white.opacity(0.76))
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func videoAction(
+        icon: String,
+        label: String,
+        active: Bool,
+        activeColor: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(active ? activeColor : .white)
+                    .frame(width: 46, height: 46)
+                    .background(Circle().fill(.black.opacity(0.34)))
+                    .overlay(Circle().stroke(.white.opacity(0.13), lineWidth: 1))
+                    .shadow(color: .black.opacity(0.30), radius: 10, y: 4)
+                Text(label)
+                    .font(.wwav(9, weight: .medium))
+                    .tracking(0.8)
+                    .foregroundStyle(.white.opacity(0.82))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     private var bottomPanel: some View {
-        ZStack(alignment: .bottomLeading) {
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.78)],
-                startPoint: .top, endPoint: .bottom
-            )
-            .frame(height: 260)
-            .allowsHitTesting(false)
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text(currentPost.title)
+                    .wwavTitle(size: 24)
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
 
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .bottom) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(post.artist)
-                            .font(.wwav(14, weight: .medium))
-                            .foregroundStyle(.white)
-                        Text(post.title)
-                            .wwavTitle(size: 20)
-                            .foregroundStyle(.white)
-                        if !post.displayText.isEmpty {
-                            Text(post.displayText)
-                                .font(.wwav(12, weight: .light))
-                                .foregroundStyle(.white.opacity(0.80))
-                                .lineLimit(2)
-                        }
-                    }
-                    Spacer()
-                    muteButton
+                if !currentPost.displayText.isEmpty {
+                    Text(currentPost.displayText)
+                        .font(.wwav(13, weight: .light))
+                        .foregroundStyle(.white.opacity(0.84))
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
-                scrubberRow
+                HStack(spacing: 10) {
+                    Text("\(short(currentPost.plays)) plays")
+                    Text("·")
+                    Text("@\(currentPost.handle)")
+                }
+                .font(.wwav(11, weight: .light))
+                .tracking(1)
+                .foregroundStyle(.white.opacity(0.68))
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 36)
-            .padding(.top, 12)
+
+            scrubberRow
         }
-        .background(.ultraThinMaterial.opacity(0.32), in: Rectangle())
+        .padding(.horizontal, 18)
+        .padding(.trailing, 78)
+        .padding(.bottom, 26)
+        .padding(.top, 24)
     }
 
-    // MARK: – Mute toggle
+    private var commentsDrawer: some View {
+        VStack {
+            Spacer()
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("replies")
+                        .wwavLabel(size: 10, tracking: 2.2)
+                        .foregroundStyle(theme.muted)
+                    Spacer()
+                    Button {
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                            showingComments = false
+                        }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(theme.ink)
+                            .frame(width: 30, height: 30)
+                            .background(Circle().fill(theme.muted.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                }
 
-    private var muteButton: some View {
-        Button {
-            controller.toggleMute()
-        } label: {
-            ZStack {
-                Circle()
-                    .fill(.ultraThinMaterial)
-                    .frame(width: 38, height: 38)
-                Image(systemName: controller.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.white)
+                CommentsThread(track: currentPost)
+                    .frame(maxHeight: 300)
             }
-            .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(theme.sand.opacity(0.96))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(theme.muted.opacity(0.18), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.35), radius: 24, y: -4)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 18)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(controller.isMuted ? "Unmute" : "Mute")
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     // MARK: – Scrubber row (timecodes + bar)
@@ -323,6 +525,11 @@ struct VideoPostPlayer: View {
 
     // MARK: – Time formatting
 
+    private func short(_ n: Int) -> String {
+        if n >= 1000 { return String(format: "%.1fK", Double(n) / 1000) }
+        return "\(n)"
+    }
+
     private func formatTime(_ seconds: Double) -> String {
         guard seconds.isFinite, seconds >= 0 else { return "0:00" }
         let total = Int(seconds.rounded())
@@ -343,15 +550,15 @@ enum SeekDirection: Equatable {
 // MARK: – VideoLayerView / PlayerContainerView
 
 /// Plain UIView host for AVPlayerLayer so the video fills the view edge to
-/// edge with `.resizeAspect`. AVKit's `VideoPlayer` defaults to a
-/// letterboxed look that doesn't match the TikTok style we want.
+/// edge with `.resizeAspectFill`. AVKit's `VideoPlayer` defaults to a
+/// letterboxed look that doesn't match the social-video surface.
 private struct VideoLayerView: UIViewRepresentable {
     let player: AVPlayer
 
     func makeUIView(context: Context) -> PlayerContainerView {
         let v = PlayerContainerView()
         v.playerLayer.player = player
-        v.playerLayer.videoGravity = .resizeAspect
+        v.playerLayer.videoGravity = .resizeAspectFill
         return v
     }
 
@@ -359,6 +566,7 @@ private struct VideoLayerView: UIViewRepresentable {
         if uiView.playerLayer.player !== player {
             uiView.playerLayer.player = player
         }
+        uiView.playerLayer.videoGravity = .resizeAspectFill
     }
 }
 

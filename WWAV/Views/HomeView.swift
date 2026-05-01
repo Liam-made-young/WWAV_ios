@@ -2,6 +2,79 @@ import SwiftUI
 
 private let feedTabLabels = ["for you", "following", "friends"]
 
+private struct WWAVLogoMark: View {
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(.black)
+
+                Circle()
+                    .fill(.white)
+                    .frame(width: w * 0.92, height: w * 0.92)
+                    .offset(y: -h * 0.08)
+
+                Circle()
+                    .fill(.black)
+                    .frame(width: w * 0.43, height: w * 0.43)
+                    .offset(x: w * 0.04, y: h * 0.08)
+
+                Circle()
+                    .fill(.white)
+                    .frame(width: w * 0.24, height: w * 0.24)
+                    .offset(x: -w * 0.02, y: h * 0.22)
+
+                Circle()
+                    .fill(.black)
+                    .frame(width: w * 0.25, height: w * 0.25)
+                    .offset(x: w * 0.32, y: h * 0.18)
+
+                Circle()
+                    .fill(.white)
+                    .frame(width: w * 0.17, height: w * 0.17)
+                    .offset(x: w * 0.32, y: h * 0.24)
+
+                Capsule()
+                    .fill(.black)
+                    .frame(width: w * 0.98, height: h * 0.045)
+                    .offset(y: h * 0.24)
+
+                Capsule()
+                    .fill(.black)
+                    .frame(width: w * 0.44, height: h * 0.052)
+                    .offset(x: -w * 0.26, y: h * 0.34)
+
+                Capsule()
+                    .fill(.black)
+                    .frame(width: w * 0.34, height: h * 0.052)
+                    .offset(x: w * 0.30, y: h * 0.34)
+
+                Capsule()
+                    .fill(.black)
+                    .frame(width: w * 0.78, height: h * 0.052)
+                    .offset(x: w * 0.06, y: h * 0.45)
+
+                Circle()
+                    .fill(.black)
+                    .frame(width: w * 0.40, height: w * 0.40)
+                    .offset(x: -w * 0.22, y: h * 0.53)
+
+                Capsule()
+                    .fill(.white)
+                    .frame(width: w * 0.44, height: h * 0.12)
+                    .rotationEffect(.degrees(-10))
+                    .offset(x: w * 0.18, y: h * 0.49)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .accessibilityLabel("WWAV")
+    }
+}
+
 struct HomeView: View {
     @EnvironmentObject var library: TrackLibrary
     @EnvironmentObject var player: StemPlayerEngine
@@ -56,12 +129,14 @@ struct HomeView: View {
 
     private var header: some View {
         HStack {
-            Text("wwav").wwavTitle(size: 48).tracking(-1)
+            WWAVLogoMark()
+                .frame(width: 54, height: 54)
+                .shadow(color: .black.opacity(0.16), radius: 6, y: 3)
             Spacer()
         }
         .padding(.horizontal, 24)
-        .padding(.top, 14)
-        .padding(.bottom, 18)
+        .padding(.top, 12)
+        .padding(.bottom, 14)
     }
 
     private var tabPicker: some View {
@@ -262,34 +337,50 @@ struct FeedItemView: View {
     @Environment(\.theme) private var theme
     @EnvironmentObject var auth: AuthManager
     @EnvironmentObject var library: TrackLibrary
+    @EnvironmentObject var nav: AppNavigation
     @State private var showingComments: Bool = false
     @State private var editing: Bool = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
-            ProfileAvatar(url: auth.user?.profilePictureURL, size: 44)
+            Button {
+                nav.openProfile(for: track)
+            } label: {
+                ProfileAvatar(url: track.authorProfilePictureURL, size: 44)
+            }
+            .buttonStyle(.plain)
 
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(track.artist)
-                        .font(.wwav(15, weight: .medium))
-                        .foregroundStyle(theme.ink)
-                    Text("@\(track.handle)")
-                        .font(.wwav(12, weight: .light))
-                        .foregroundStyle(theme.muted)
+                    Button {
+                        nav.openProfile(for: track)
+                    } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(track.artist)
+                                .font(.wwav(15, weight: .medium))
+                                .foregroundStyle(theme.ink)
+                            Text("@\(track.handle)")
+                                .font(.wwav(12, weight: .light))
+                                .foregroundStyle(theme.muted)
+                        }
+                    }
+                    .buttonStyle(.plain)
+
                     PostKindBadge(kind: track.kind)
                     Spacer(minLength: 4)
                     Text(timeAgo(track.createdAt))
                         .font(.wwav(12, weight: .light))
                         .foregroundStyle(theme.muted)
-                    Button { editing = true } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 14, weight: .regular))
-                            .foregroundStyle(theme.muted)
-                            .padding(.horizontal, 4)
-                            .contentShape(Rectangle())
+                    if library.isAuthoredByCurrentUser(track) {
+                        Button { editing = true } label: {
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 14, weight: .regular))
+                                .foregroundStyle(theme.muted)
+                                .padding(.horizontal, 4)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
 
                 bodyContent
@@ -564,6 +655,231 @@ private struct PostKindBadge: View {
                     Capsule().fill(theme.muted.opacity(0.14))
                 )
         }
+    }
+}
+
+struct PublicProfileSheet: View {
+    let route: PublicProfileRoute
+
+    @EnvironmentObject var library: TrackLibrary
+    @EnvironmentObject var player: StemPlayerEngine
+    @EnvironmentObject var nav: AppNavigation
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.theme) private var theme
+
+    private var posts: [Track] {
+        library.posts(for: route)
+    }
+
+    private var totalViews: Int {
+        posts.reduce(0) { $0 + $1.plays }
+    }
+
+    private var totalLoves: Int {
+        posts.reduce(0) { $0 + $1.loves }
+    }
+
+    private var isCurrentUser: Bool {
+        if let routeId = route.authorUserId, let myId = library.profile.remoteUserId {
+            return routeId == myId
+        }
+        return route.handle.lowercased() == library.profile.handle.lowercased()
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                theme.pageRadial.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        header
+
+                        SoftRule()
+
+                        if posts.isEmpty {
+                            EmptyState(
+                                title: "no posts yet",
+                                body: "posts from @\(route.handle) will collect here once the feed sees them."
+                            )
+                            .frame(minHeight: 220)
+                        } else {
+                            VStack(spacing: 0) {
+                                ForEach(Array(posts.enumerated()), id: \.element.id) { index, track in
+                                    PublicProfilePostRow(track: track, index: index) {
+                                        nav.openPost(track, in: library, with: player)
+                                        dismiss()
+                                    }
+                                    if index < posts.count - 1 { SoftRule() }
+                                }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, 24)
+                    .padding(.bottom, 28)
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(theme.ink)
+                            .frame(width: 34, height: 34)
+                            .background(Circle().fill(theme.muted.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 14) {
+                ProfileAvatar(url: route.profilePictureURL, size: 74)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 7) {
+                        Text(route.displayName)
+                            .wwavTitle(size: 30)
+                            .lineLimit(1)
+                        if isCurrentUser {
+                            Text("you")
+                                .font(.wwav(9, weight: .medium, italic: true))
+                                .tracking(1.3)
+                                .foregroundStyle(theme.glow)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(theme.accent))
+                        }
+                    }
+                    Text("@\(route.handle)")
+                        .font(.wwav(13, weight: .light))
+                        .foregroundStyle(theme.muted)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                profileStat("\(posts.count)", "posts")
+                profileStat(short(totalViews), "views")
+                profileStat(short(totalLoves), "loves")
+            }
+        }
+    }
+
+    private func profileStat(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(.wwav(16, weight: .medium))
+                .foregroundStyle(theme.ink)
+            Text(label)
+                .font(.wwav(10, weight: .light))
+                .tracking(1.2)
+                .foregroundStyle(theme.muted)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .background(RoundedRectangle(cornerRadius: 8).fill(theme.sand.opacity(0.58)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.muted.opacity(0.16), lineWidth: 1))
+    }
+
+    private func short(_ n: Int) -> String {
+        if n >= 1000 { return String(format: "%.1fK", Double(n) / 1000) }
+        return "\(n)"
+    }
+}
+
+private struct PublicProfilePostRow: View {
+    let track: Track
+    let index: Int
+    let onTap: () -> Void
+
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(alignment: .center, spacing: 12) {
+                thumbnail
+                    .frame(width: 54, height: 54)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(theme.muted.opacity(0.22), lineWidth: 1)
+                    )
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(track.title)
+                            .wwavTitle(size: 20)
+                            .lineLimit(1)
+                        PostKindBadge(kind: track.kind)
+                    }
+                    Text(rowSubtitle)
+                        .font(.wwav(11, weight: .light))
+                        .tracking(1)
+                        .foregroundStyle(theme.muted)
+                        .lineLimit(1)
+                    if track.kind == .text, !track.displayText.isEmpty {
+                        Text(track.displayText)
+                            .font(.wwav(12, weight: .light))
+                            .foregroundStyle(theme.ink.opacity(0.80))
+                            .lineLimit(2)
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(theme.muted.opacity(0.65))
+            }
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var thumbnail: some View {
+        switch track.kind {
+        case .music, .video, .image:
+            ZStack {
+                LinearGradient(
+                    colors: [theme.clay.opacity(0.25), theme.clayDeep.opacity(0.15)],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                )
+                CachedAsyncImage(url: track.thumbnailURL) { Color.clear }
+                if track.kind == .video {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
+                }
+            }
+        case .text:
+            ZStack {
+                LinearGradient(
+                    colors: [theme.sand, theme.sandDeep.opacity(0.64)],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                )
+                Image(systemName: "text.bubble")
+                    .font(.system(size: 18, weight: .regular))
+                    .foregroundStyle(theme.muted)
+            }
+        }
+    }
+
+    private var rowSubtitle: String {
+        let views = track.kind == .music || track.kind == .video ? "plays" : "views"
+        return "\(track.plays) \(views) · \(track.loves) loves"
     }
 }
 

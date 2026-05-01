@@ -120,6 +120,10 @@ struct Track: Identifiable, Codable, Equatable {
     var title: String
     var artist: String
     var handle: String
+    /// Server-side user id for the creator, when the API provides it.
+    var authorUserId: Int?
+    /// Raw profile-picture path/key/URL for the creator.
+    var authorProfilePicture: String?
     var bio: String
     /// Local cache URL for the original mix (or nil for the bundled sample).
     var sourceURL: URL?
@@ -131,6 +135,10 @@ struct Track: Identifiable, Codable, Equatable {
     /// Server-side numeric primary key from `UserUpload`. Required by the
     /// `/api/social/like` endpoint, which keys likes by `userUploadId`.
     var userUploadId: Int?
+    /// Server-side `PublishedTrack.id` for tracks discovered through the
+    /// public browse feed. Used when a cross-user track no longer has a
+    /// visible `UserUpload.id` on this client.
+    var publishedTrackId: Int?
     /// Cover art URL (server-relative like `/api/images/123.jpg`, or a
     /// full URL). Resolved into a fetchable `URL` via `coverImageURL`.
     var coverArtUrl: String?
@@ -169,6 +177,10 @@ struct Track: Identifiable, Codable, Equatable {
     /// Resolved cover-art URL ready for `AsyncImage`, or nil if no cover.
     var coverImageURL: URL? {
         Track.resolveImageURL(coverArtUrl)
+    }
+
+    var authorProfilePictureURL: URL? {
+        Track.resolveImageURL(authorProfilePicture)
     }
 
     /// Resolved URLs for each carousel image on an image post.
@@ -222,8 +234,8 @@ struct Track: Identifiable, Codable, Equatable {
     // existing music tracks survive the upgrade.
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, title, artist, handle, bio
-        case sourceURL, sourceObjectKey, remoteTrackId, userUploadId
+        case id, kind, title, artist, handle, authorUserId, authorProfilePicture, bio
+        case sourceURL, sourceObjectKey, remoteTrackId, userUploadId, publishedTrackId
         case coverArtUrl, stems, stemObjectKeys
         case imageUrls, videoURL, videoDuration, remotePostId, textBody
         case status, durationSeconds, createdAt
@@ -236,11 +248,14 @@ struct Track: Identifiable, Codable, Equatable {
         title: String,
         artist: String,
         handle: String,
+        authorUserId: Int? = nil,
+        authorProfilePicture: String? = nil,
         bio: String,
         sourceURL: URL? = nil,
         sourceObjectKey: String? = nil,
         remoteTrackId: String? = nil,
         userUploadId: Int? = nil,
+        publishedTrackId: Int? = nil,
         coverArtUrl: String? = nil,
         stems: StemBundle? = nil,
         stemObjectKeys: [String: String]? = nil,
@@ -263,11 +278,14 @@ struct Track: Identifiable, Codable, Equatable {
         self.title = title
         self.artist = artist
         self.handle = handle
+        self.authorUserId = authorUserId
+        self.authorProfilePicture = authorProfilePicture
         self.bio = bio
         self.sourceURL = sourceURL
         self.sourceObjectKey = sourceObjectKey
         self.remoteTrackId = remoteTrackId
         self.userUploadId = userUploadId
+        self.publishedTrackId = publishedTrackId
         self.coverArtUrl = coverArtUrl
         self.stems = stems
         self.stemObjectKeys = stemObjectKeys
@@ -293,11 +311,14 @@ struct Track: Identifiable, Codable, Equatable {
         self.title           = try c.decode(String.self, forKey: .title)
         self.artist          = try c.decode(String.self, forKey: .artist)
         self.handle          = try c.decode(String.self, forKey: .handle)
+        self.authorUserId    = try c.decodeIfPresent(Int.self, forKey: .authorUserId)
+        self.authorProfilePicture = try c.decodeIfPresent(String.self, forKey: .authorProfilePicture)
         self.bio             = try c.decode(String.self, forKey: .bio)
         self.sourceURL       = try c.decodeIfPresent(URL.self, forKey: .sourceURL)
         self.sourceObjectKey = try c.decodeIfPresent(String.self, forKey: .sourceObjectKey)
         self.remoteTrackId   = try c.decodeIfPresent(String.self, forKey: .remoteTrackId)
         self.userUploadId    = try c.decodeIfPresent(Int.self, forKey: .userUploadId)
+        self.publishedTrackId = try c.decodeIfPresent(Int.self, forKey: .publishedTrackId)
         self.coverArtUrl     = try c.decodeIfPresent(String.self, forKey: .coverArtUrl)
         self.stems           = try c.decodeIfPresent(StemBundle.self, forKey: .stems)
         self.stemObjectKeys  = try c.decodeIfPresent([String: String].self, forKey: .stemObjectKeys)
