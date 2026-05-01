@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>WWAV — iOS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT,WONK@0,9..144,100..900,30..100,0..1;1,9..144,100..900,30..100,0..1&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin: 0; padding: 0; background: #c8b89c; font-family: 'Fraunces', system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  @keyframes blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="wwav-screens.jsx"></script>
+<script type="text/babel">
+  const { useState } = React;
+
+  // Phone frame — minimal, custom (we want our own paper/ink aesthetic, not iOS gray)
+  function Phone({ children, label }) {
+    return (
+      <div style={{
+        width: 390, height: 844,
+        borderRadius: 56,
+        padding: 12,
+        background: '#3D2E22',
+        boxShadow: '0 30px 60px rgba(60,40,25,0.25), 0 0 0 1px rgba(40,25,15,0.5)',
+        position: 'relative',
+      }}>
+        <div style={{
+          width: '100%', height: '100%',
+          borderRadius: 44, overflow: 'hidden',
+          background: WWAV_PAPER,
+          position: 'relative',
+          display: 'flex', flexDirection: 'column',
+        }}>
+          {/* dynamic island */}
+          <div style={{
+            position: 'absolute', top: 11, left: '50%', transform: 'translateX(-50%)',
+            width: 110, height: 32, borderRadius: 20, background: '#3D2E22', zIndex: 100,
+          }} />
+          <StatusBar />
+          {children}
+        </div>
+      </div>
+    );
+  }
+
+  // Wraps a screen + tab bar
+  function Screen({ tab, children, onTab }) {
+    return (
+      <>
+        {children}
+        <TabBar active={tab} onChange={onTab || (() => {})} />
+      </>
+    );
+  }
+
+  // Interactive prototype: cycles through tabs when you click them
+  function PhoneInteractive() {
+    const [tab, setTab] = useState('play');
+    const [uploadOpen, setUploadOpen] = useState(false);
+
+    const goto = (t) => {
+      setTab(t);
+      setUploadOpen(false);
+    };
+
+    let body;
+    if (tab === 'home')    body = <HomeScreen />;
+    else if (tab === 'search')  body = <SearchScreen />;
+    else if (tab === 'play')    body = <PlayScreen />;
+    else if (tab === 'plus')    body = uploadOpen ? <UploadFilled onBack={() => setUploadOpen(false)}/> : <UploadEmpty onPlus={() => setUploadOpen(true)}/>;
+    else if (tab === 'profile') body = <ProfileScreen />;
+
+    return <Phone><Screen tab={tab} onTab={goto}>{body}</Screen></Phone>;
+  }
+
+  function App() {
+    return (
+      <DesignCanvas
+        title="WWAV — iOS"
+        subtitle="five screens. play / home / upload / search / profile. tap any tab on the prototype to navigate live."
+      >
+        <DCSection id="proto" title="Live Prototype">
+          <DCArtboard id="proto-1" label="Interactive — tap the tab bar" width={414} height={868}>
+            <div style={{ padding: 12 }}><PhoneInteractive /></div>
+          </DCArtboard>
+        </DCSection>
+
+        <DCSection id="screens" title="All Screens">
+          <DCArtboard id="play" label="Play / Stem Player" width={414} height={868}>
+            <div style={{ padding: 12 }}>
+              <Phone><Screen tab="play"><PlayScreen /></Screen></Phone>
+            </div>
+          </DCArtboard>
+
+          <DCArtboard id="home" label="Home / Feed" width={414} height={868}>
+            <div style={{ padding: 12 }}>
+              <Phone><Screen tab="home"><HomeScreen /></Screen></Phone>
+            </div>
+          </DCArtboard>
+
+          <DCArtboard id="upload-empty" label="Upload / Empty" width={414} height={868}>
+            <div style={{ padding: 12 }}>
+              <Phone><Screen tab="plus"><UploadEmpty onPlus={() => {}}/></Screen></Phone>
+            </div>
+          </DCArtboard>
+
+          <DCArtboard id="upload-filled" label="Upload / Filled form" width={414} height={868}>
+            <div style={{ padding: 12 }}>
+              <Phone><Screen tab="plus"><UploadFilled onBack={() => {}}/></Screen></Phone>
+            </div>
+          </DCArtboard>
+
+          <DCArtboard id="search" label="Search" width={414} height={868}>
+            <div style={{ padding: 12 }}>
+              <Phone><Screen tab="search"><SearchScreen /></Screen></Phone>
+            </div>
+          </DCArtboard>
+
+          <DCArtboard id="profile" label="Profile" width={414} height={868}>
+            <div style={{ padding: 12 }}>
+              <Phone><Screen tab="profile"><ProfileScreen /></Screen></Phone>
+            </div>
+          </DCArtboard>
+        </DCSection>
+
+        <DCSection id="detail" title="Stem Player — close-up">
+          <DCArtboard id="stem-detail" label="The 3D stem player" width={520} height={520}>
+            <div style={{ width: 520, height: 520, background: 'radial-gradient(ellipse at 50% 50%, #E8DCC8 0%, #C8B89C 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <StemPlayer size={400} />
+            </div>
+          </DCArtboard>
+        </DCSection>
+      </DesignCanvas>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

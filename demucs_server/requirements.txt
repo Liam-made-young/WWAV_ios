@@ -1,0 +1,6 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+demucs>=4.0.1
+torch>=2.1
+torchaudio>=2.1

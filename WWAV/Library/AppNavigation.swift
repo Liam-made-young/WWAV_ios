@@ -1,0 +1,79 @@
+import Foundation
+import Combine
+
+/// Single source of truth for the active tab. Any view can call
+/// `nav.openPost(track, in: library, with: player)` to:
+///   1. start the right kind of playback for the post (stems for music,
+///      AVPlayer for video; image/text just sit in the feed)
+///   2. switch the root tab bar to the Play tab when applicable
+@MainActor
+final class AppNavigation: ObservableObject {
+    @Published var active: AppTab = .play
+    /// The currently focused post for the play screen — used for video
+    /// posts that take over the play tab. `nil` for music (the StemPlayer
+    /// engine owns the music post on the play screen).
+    @Published var activePost: Track?
+    /// Whether an image post is currently expanded into a fullscreen viewer.
+    @Published var imageViewerPost: Track?
+
+    func goToPlay() {
+        active = .play
+    }
+
+    /// Loads a music track into the stem engine and switches to the play tab.
+    func playTrack(_ track: Track,
+                   in library: TrackLibrary,
+                   with player: StemPlayerEngine) {
+        openPost(track, in: library, with: player)
+    }
+
+    /// Routes any post to its correct destination. Music → stem player.
+    /// Video → play tab with the video player. Image → fullscreen carousel
+    /// modal. Text → no-op (the feed item is already the full post).
+    func openPost(_ track: Track,
+                  in library: TrackLibrary,
+                  with player: StemPlayerEngine) {
+        switch track.kind {
+        case .music:
+            active = .play
+            activePost = track
+            // Pause the previous track immediately and flip the engine
+            // into "preparing" so the play view shows a loading overlay
+            // for the entire duration of the stem download — instead of
+            // letting the old song keep going while we silently fetch.
+            player.beginPreparing(track)
+            Task {
+                let primed = await library.prepareForPlayback(track) { p in
+                    player.updatePrepareProgress(p)
+                }
+                guard let primed else {
+                    player.endPreparing()
+                    return
+                }
+                // If the user already navigated to a different track while
+                // we were downloading, abort: that newer track owns the
+                // preparing state now.
+                guard player.preparingTrack?.id == track.id else { return }
+                player.load(primed)
+                player.endPreparing()
+                library.incrementPlays(of: primed.id)
+            }
+        case .video:
+            active = .play
+            activePost = track
+            // Pause the stem engine if it was running so audio doesn't fight
+            // the video soundtrack.
+            if player.isPlaying { player.pause() }
+            // If the user was mid-download for a music track, cancel the
+            // loading state so the video player doesn't sit behind a stale
+            // overlay.
+            player.endPreparing()
+            library.incrementPlays(of: track.id)
+        case .image:
+            imageViewerPost = track
+        case .text:
+            // Text posts live entirely in the feed; tapping is a no-op.
+            break
+        }
+    }
+}
