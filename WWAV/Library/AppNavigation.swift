@@ -124,8 +124,7 @@ final class AppNavigation: ObservableObject {
         case .album:
             albumViewerPost = track
             library.incrementPlays(of: track.id)
-        case .text:
-            // Text posts live entirely in the feed; tapping is a no-op.
+        case .text, .radio:
             break
         }
     }

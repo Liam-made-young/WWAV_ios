@@ -92,12 +92,14 @@ enum RemoteProcessingState: Equatable {
     }
 }
 
-/// One of four post kinds. `music` is the original stem-player upload; the
-/// other three are simple media posts that share Track's metadata fields
-/// (title, bio, social counters) but skip stem separation.
+/// Post kinds. `music` is the original stem-player upload; `radio` is a
+/// live audio-only queue; the rest are simple media posts that share
+/// Track's metadata fields (title, bio, social counters) but skip stem
+/// separation.
 enum PostKind: String, Codable, CaseIterable, Identifiable {
     case music
     case album
+    case radio
     case image
     case text
     case video
@@ -107,6 +109,7 @@ enum PostKind: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .music: return "music"
         case .album: return "album"
+        case .radio: return "radio"
         case .image: return "image"
         case .text:  return "text"
         case .video: return "video"
@@ -205,12 +208,12 @@ struct Track: Identifiable, Codable, Equatable {
     }
 
     /// Best-guess thumbnail across post types — cover for music/video,
-    /// first carousel image for image posts, nil for text.
+    /// first carousel image for image posts, nil for text/radio.
     var thumbnailURL: URL? {
         switch kind {
         case .music, .album, .video: return coverImageURL
         case .image:         return resolvedImageURLs.first ?? coverImageURL
-        case .text:          return nil
+        case .text, .radio:  return nil
         }
     }
 

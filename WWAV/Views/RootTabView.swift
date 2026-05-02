@@ -11,7 +11,6 @@ struct RootTabView: View {
                 Group {
                     switch nav.active {
                     case .home:    HomeView()
-                    case .radio:   RadioView()
                     case .play:    PlayView()
                     case .plus:    UploadView()
                     case .profile: ProfileView()
