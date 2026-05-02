@@ -5,6 +5,7 @@ struct PlayView: View {
     @EnvironmentObject var library: TrackLibrary
     @EnvironmentObject var nav: AppNavigation
     @Environment(\.theme) private var theme
+    @State private var showingRemix: Bool = false
 
     var body: some View {
         Group {
@@ -27,6 +28,11 @@ struct PlayView: View {
         }
         .onAppear { autoLoadIfNeeded() }
         .onChange(of: library.myTracks) { _, _ in autoLoadIfNeeded() }
+        .fullScreenCover(isPresented: $showingRemix) {
+            if let track = player.currentTrack {
+                RemixSheet(track: track)
+            }
+        }
     }
 
     private var stemBody: some View {
@@ -122,12 +128,78 @@ struct PlayView: View {
                 Spacer()
             }
             if let track = player.currentTrack {
-                Text("\(track.artist.lowercased()) — \(track.bio.isEmpty ? "stems ready" : "stems")")
-                    .wwavLabel(size: 13, tracking: 1.5)
-                    .foregroundStyle(theme.muted)
+                HStack(spacing: 8) {
+                    Text("\(track.artist.lowercased()) — \(track.bio.isEmpty ? "stems ready" : "stems")")
+                        .wwavLabel(size: 13, tracking: 1.5)
+                        .foregroundStyle(theme.muted)
+
+                    if track.isRemix {
+                        // Remix badge
+                        Text("remix")
+                            .font(.wwav(9, weight: .medium))
+                            .tracking(1.2)
+                            .foregroundStyle(theme.glow)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(theme.accent))
+
+                        // Genealogy button — opens the parent track
+                        if let parent = library.parentTrack(of: track) {
+                            Button {
+                                nav.openPost(parent, in: library, with: player)
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "arrow.up.left.circle")
+                                        .font(.system(size: 10, weight: .regular))
+                                    Text("source")
+                                        .font(.wwav(9, weight: .light))
+                                        .tracking(1.0)
+                                }
+                                .foregroundStyle(theme.muted)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(theme.muted.opacity(0.14)))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+
+            // Music social action row with remix button
+            if let track = player.currentTrack, track.kind == .music {
+                musicSocialPanel(track)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func musicSocialPanel(_ track: Track) -> some View {
+        HStack(spacing: 14) {
+            // Remix button
+            Button {
+                showingRemix = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "waveform.badge.plus")
+                        .font(.system(size: 13, weight: .regular))
+                    Text("remix")
+                        .font(.wwav(11, weight: .light))
+                        .tracking(1)
+                }
+                .foregroundStyle(theme.accent)
+                .padding(.vertical, 5)
+                .padding(.horizontal, 10)
+                .background(
+                    Capsule().fill(theme.accent.opacity(0.12))
+                )
+                .overlay(Capsule().stroke(theme.accent.opacity(0.30), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+        }
+        .padding(.top, 4)
     }
 
     private func positionLabel(for track: Track) -> String {

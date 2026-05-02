@@ -49,6 +49,7 @@
 		F2DE4A72FFA7A99CF7E6F6B5 /* MiWwavStemService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE4F90296648182C7D758FFD /* MiWwavStemService.swift */; };
 		FDADBF422256F74BCE539309 /* CachedAsyncImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9F7683433E6B4DEF53E922F /* CachedAsyncImage.swift */; };
 		FF70187DFA54F669C1FF6DF9 /* Persistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DB32C30330E6E4EC7948D3F /* Persistence.swift */; };
+		AA11BB22CC33DD44EE55FF66 /* RemixSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB22CC33DD44EE55FF6600AA /* RemixSheet.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -106,6 +107,7 @@
 		E29782928C426896D5ED3D76 /* StemSeparationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemSeparationService.swift; sourceTree = "<group>"; };
 		F070C084BD61464505D10C14 /* StorageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageService.swift; sourceTree = "<group>"; };
 		F9F7683433E6B4DEF53E922F /* CachedAsyncImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CachedAsyncImage.swift; sourceTree = "<group>"; };
+		BB22CC33DD44EE55FF6600AA /* RemixSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemixSheet.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -210,6 +212,7 @@
 				4918CFB246140C803581FEC3 /* ImageCarousel.swift */,
 				8E45A534FE2DF613CDB0C723 /* MiniWaveform.swift */,
 				800232E827F16246145411B4 /* ProfileAvatar.swift */,
+				BB22CC33DD44EE55FF6600AA /* RemixSheet.swift */,
 				98F27FE1015F4A6B837C0968 /* SoftRule.swift */,
 				9F4E270B6841D516CA3E7D4E /* StemPlayerWidget.swift */,
 				C9B98DE920DF044E62E06642 /* TabBar.swift */,
@@ -367,6 +370,7 @@
 				FF70187DFA54F669C1FF6DF9 /* Persistence.swift in Sources */,
 				939160F7CF3106A44CF62160 /* PlayView.swift in Sources */,
 				22B1614ACD83465C363B5981 /* ProfileAvatar.swift in Sources */,
+				AA11BB22CC33DD44EE55FF66 /* RemixSheet.swift in Sources */,
 				AED2E14A8C96A4E26823B6F8 /* ProfileView.swift in Sources */,
 				A399DED45482E97E0DACB665 /* RootTabView.swift in Sources */,
 				36E718A897B72E44ABE0DFF9 /* SampleTrackBuilder.swift in Sources */,
