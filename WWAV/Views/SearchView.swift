@@ -9,7 +9,7 @@ struct SearchView: View {
     @State private var kindFilter: KindFilter = .all
 
     private enum KindFilter: String, CaseIterable, Identifiable {
-        case all, music, image, text, video
+        case all, music, album, image, text, video
         var id: String { rawValue }
     }
 
@@ -22,6 +22,7 @@ struct SearchView: View {
         switch kindFilter {
         case .all:   kindFiltered = pool
         case .music: kindFiltered = pool.filter { $0.kind == .music }
+        case .album: kindFiltered = pool.filter { $0.kind == .album }
         case .image: kindFiltered = pool.filter { $0.kind == .image }
         case .text:  kindFiltered = pool.filter { $0.kind == .text }
         case .video: kindFiltered = pool.filter { $0.kind == .video }
@@ -165,7 +166,7 @@ private struct ResultRow: View {
                         .foregroundStyle(theme.muted)
                 }
                 Spacer(minLength: 0)
-                if track.kind == .music {
+                if track.kind == .music || track.kind == .album {
                     MiniWaveform(accent: accent)
                 }
             }
@@ -179,7 +180,7 @@ private struct ResultRow: View {
     @ViewBuilder
     private var thumbnail: some View {
         switch track.kind {
-        case .music, .video, .image:
+        case .music, .album, .video, .image:
             ZStack {
                 LinearGradient(colors: [theme.clay.opacity(0.25), theme.clayDeep.opacity(0.15)],
                                startPoint: .topLeading, endPoint: .bottomTrailing)

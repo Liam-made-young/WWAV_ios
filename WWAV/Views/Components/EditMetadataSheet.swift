@@ -38,6 +38,9 @@ struct EditMetadataSheet: View {
     @State private var newImageDatas: [Data] = []
     @State private var newImagePreviews: [UIImage] = []
 
+    // Album tracklist editing.
+    @State private var albumTrackIds: [UUID] = []
+
     @State private var showDeleteConfirm: Bool = false
 
     var body: some View {
@@ -53,6 +56,7 @@ struct EditMetadataSheet: View {
                 title = track.title
                 bio = track.bio
                 textBody = track.textBody ?? ""
+                albumTrackIds = track.albumTrackIds ?? []
             }
             .fileImporter(
                 isPresented: $pickAudioOpen,
@@ -157,6 +161,14 @@ struct EditMetadataSheet: View {
         }
         if track.kind == .image {
             field(label: "carousel images (replace)") { imagesPicker }
+        }
+        if track.kind == .album {
+            TrackQueueEditor(
+                title: "tracklist",
+                emptyMessage: "choose songs for this album",
+                tracks: library.albumCandidateTracks,
+                selectedIDs: $albumTrackIds
+            )
         }
     }
 
@@ -423,6 +435,9 @@ struct EditMetadataSheet: View {
         }
         if !newImageDatas.isEmpty, track.kind == .image {
             library.replaceImages(id: track.id, images: newImageDatas, token: token)
+        }
+        if track.kind == .album {
+            library.updateAlbumTracklist(id: track.id, trackIds: albumTrackIds, token: token)
         }
         dismiss()
     }

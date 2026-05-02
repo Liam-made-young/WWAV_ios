@@ -1,6 +1,9 @@
+import AVFoundation
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
+
+private let uploadComposerKinds: [PostKind] = [.music, .image, .text, .video]
 
 struct UploadView: View {
     @EnvironmentObject var library: TrackLibrary
@@ -23,6 +26,7 @@ struct UploadView: View {
                 Group {
                     switch selectedKind {
                     case .music: MusicUploadForm()
+                    case .album: AlbumUploadForm()
                     case .image: ImageUploadForm()
                     case .text: TextUploadForm()
                     case .video: VideoUploadForm()
@@ -39,7 +43,7 @@ struct UploadView: View {
 
     private var kindPicker: some View {
         HStack(spacing: 6) {
-            ForEach(PostKind.allCases) { kind in
+            ForEach(uploadComposerKinds) { kind in
                 Button {
                     withAnimation(.easeInOut(duration: 0.18)) { selectedKind = kind }
                 } label: {
@@ -72,10 +76,11 @@ struct UploadView: View {
 
     private func consumeRequestedKind(animated: Bool) {
         guard let requested = nav.requestedUploadKind else { return }
+        let target: PostKind = requested == .album ? .music : requested
         if animated {
-            withAnimation(.easeInOut(duration: 0.18)) { selectedKind = requested }
+            withAnimation(.easeInOut(duration: 0.18)) { selectedKind = target }
         } else {
-            selectedKind = requested
+            selectedKind = target
         }
         nav.requestedUploadKind = nil
     }
@@ -193,28 +198,53 @@ private struct MusicUploadForm: View {
     @EnvironmentObject var auth: AuthManager
     @Environment(\.theme) private var theme
 
+    @State private var entryPickerOpen: Bool = false
     @State private var pickerOpen: Bool = false
+    @State private var recorderOpen: Bool = false
     @State private var pickedFile: PickedFile?
+    @State private var multitrackDraft: MultitrackDraft?
     @State private var title: String = ""
     @State private var bio: String = ""
     @State private var inFlightID: UUID?
     @State private var coverItem: PhotosPickerItem?
     @State private var coverImage: UIImage?
     @State private var coverData: Data?
+    @State private var albumMode: Bool = false
+    @State private var albumTitle: String = ""
+    @State private var albumCaption: String = ""
+    @State private var albumTrackIds: [UUID] = []
+    @State private var albumCoverItem: PhotosPickerItem?
+    @State private var albumCoverImage: UIImage?
+    @State private var albumCoverData: Data?
+
+    private var hasSource: Bool {
+        pickedFile != nil || multitrackDraft != nil
+    }
 
     var body: some View {
         Group {
-            if pickedFile == nil {
+            if !hasSource {
                 BigCircleEntry(
                     title: "drop a track. start a wave.",
-                    subtitle: "wav · mp3 · flac · m4a",
+                    subtitle: "files · single recording · multitrack",
                     kicker: "upload a wav"
                 ) {
-                    pickerOpen = true
+                    entryPickerOpen = true
                 }
             } else {
                 ScrollView { filled.padding(.bottom, 16) }
             }
+        }
+        .confirmationDialog(
+            "add a track",
+            isPresented: $entryPickerOpen,
+            titleVisibility: .visible
+        ) {
+            Button("look in files") { pickerOpen = true }
+            Button("record now") { recorderOpen = true }
+            Button("cancel", role: .cancel) {}
+        } message: {
+            Text("choose an audio file or record inside WWAV.")
         }
         .fileImporter(
             isPresented: $pickerOpen,
@@ -223,8 +253,23 @@ private struct MusicUploadForm: View {
         ) { result in
             if case .success(let urls) = result, let url = urls.first {
                 pickedFile = PickedFile(url: url)
+                multitrackDraft = nil
                 if title.isEmpty { title = url.deletingPathExtension().lastPathComponent }
             }
+        }
+        .sheet(isPresented: $recorderOpen) {
+            RecordNowSheet(
+                onSingleRecording: { url in
+                    pickedFile = PickedFile(url: url)
+                    multitrackDraft = nil
+                    if title.isEmpty { title = "recorded take" }
+                },
+                onMultitrackRecording: { stems in
+                    multitrackDraft = MultitrackDraft(stemURLs: stems)
+                    pickedFile = nil
+                    if title.isEmpty { title = "multitrack take" }
+                }
+            )
         }
     }
 
@@ -275,43 +320,12 @@ private struct MusicUploadForm: View {
                     .overlay(boxStroke)
             }
 
-            UploadField(label: "song file") {
-                if let f = pickedFile {
-                    HStack(spacing: 14) {
-                        ZStack {
-                            Circle().fill(
-                                RadialGradient(
-                                    colors: [theme.clay, theme.clayDeep],
-                                    center: UnitPoint(x: 0.35, y: 0.30),
-                                    startRadius: 1, endRadius: 28)
-                            )
-                            Text(
-                                f.url.pathExtension.uppercased().isEmpty
-                                    ? "WAV" : f.url.pathExtension.uppercased()
-                            )
-                            .font(.wwav(9, weight: .medium)).tracking(1).foregroundStyle(theme.glow)
-                        }
-                        .frame(width: 36, height: 36)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(f.url.lastPathComponent)
-                                .font(.wwav(14, weight: .regular)).foregroundStyle(theme.ink)
-                                .lineLimit(1)
-                            Text(f.subtitle)
-                                .font(.wwav(11, weight: .light)).foregroundStyle(theme.muted)
-                        }
-                        Spacer()
-                        Button {
-                            pickedFile = nil
-                            inFlightID = nil
-                        } label: {
-                            Text("✕").font(.wwav(13, weight: .light)).foregroundStyle(theme.muted)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.horizontal, 16).padding(.vertical, 14)
-                    .background(boxBg).overlay(boxStroke)
-                }
+            UploadField(label: sourceLabel) {
+                sourceRow
             }
+
+            albumToggle
+            if albumMode { albumSection }
 
             statusRow
             Spacer(minLength: 8)
@@ -329,6 +343,163 @@ private struct MusicUploadForm: View {
     }
     private var boxStroke: some View {
         RoundedRectangle(cornerRadius: 14).stroke(theme.muted.opacity(0.40), lineWidth: 1)
+    }
+
+    private var sourceLabel: String {
+        multitrackDraft == nil ? "song file" : "stem files"
+    }
+
+    @ViewBuilder
+    private var sourceRow: some View {
+        if let f = pickedFile {
+            HStack(spacing: 14) {
+                sourceBadge(text: f.url.pathExtension.uppercased().isEmpty ? "WAV" : f.url.pathExtension.uppercased())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(f.url.lastPathComponent)
+                        .font(.wwav(14, weight: .regular)).foregroundStyle(theme.ink)
+                        .lineLimit(1)
+                    Text("split into stems after upload · \(f.subtitle)")
+                        .font(.wwav(11, weight: .light)).foregroundStyle(theme.muted)
+                        .lineLimit(1)
+                }
+                Spacer()
+                clearSourceButton
+            }
+            .padding(.horizontal, 16).padding(.vertical, 14)
+            .background(boxBg).overlay(boxStroke)
+        } else if let draft = multitrackDraft {
+            VStack(spacing: 0) {
+                HStack(spacing: 14) {
+                    sourceBadge(text: "4X")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("recorded multitrack")
+                            .font(.wwav(14, weight: .regular)).foregroundStyle(theme.ink)
+                        Text("uses the four stem-player lanes")
+                            .font(.wwav(11, weight: .light)).foregroundStyle(theme.muted)
+                    }
+                    Spacer()
+                    clearSourceButton
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+
+                ForEach(StemKind.allCases) { kind in
+                    HStack(spacing: 10) {
+                        Text(kind.label)
+                            .font(.wwav(10, weight: .medium))
+                            .tracking(1.2)
+                            .foregroundStyle(theme.muted)
+                            .frame(width: 44, alignment: .leading)
+                        Text(draft.stemURLs[kind]?.lastPathComponent ?? "missing")
+                            .font(.wwav(12, weight: .light))
+                            .foregroundStyle(theme.ink)
+                            .lineLimit(1)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    if kind.id != (StemKind.allCases.last?.id ?? "") {
+                        Rectangle().fill(theme.muted.opacity(0.12)).frame(height: 1).padding(.leading, 16)
+                    }
+                }
+            }
+            .background(boxBg).overlay(boxStroke)
+        }
+    }
+
+    private func sourceBadge(text: String) -> some View {
+        ZStack {
+            Circle().fill(
+                RadialGradient(
+                    colors: [theme.clay, theme.clayDeep],
+                    center: UnitPoint(x: 0.35, y: 0.30),
+                    startRadius: 1, endRadius: 28)
+            )
+            Text(text)
+                .font(.wwav(9, weight: .medium))
+                .tracking(1)
+                .foregroundStyle(theme.glow)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+        }
+        .frame(width: 36, height: 36)
+    }
+
+    private var clearSourceButton: some View {
+        Button {
+            clearSource()
+        } label: {
+            Text("✕").font(.wwav(13, weight: .light)).foregroundStyle(theme.muted)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var albumToggle: some View {
+        Toggle(isOn: $albumMode.animation(.easeInOut(duration: 0.18))) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("album upload")
+                    .font(.wwav(14, weight: .regular, italic: true))
+                    .foregroundStyle(theme.ink)
+                Text("post this track as the first song on an album")
+                    .font(.wwav(11, weight: .light))
+                    .foregroundStyle(theme.muted)
+            }
+        }
+        .tint(theme.accent)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(boxBg)
+        .overlay(boxStroke)
+    }
+
+    private var albumSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            UploadField(label: "album cover") {
+                CoverPickerRow(
+                    coverItem: $albumCoverItem,
+                    coverImage: $albumCoverImage,
+                    coverData: $albumCoverData
+                )
+            }
+
+            UploadField(label: "album title") {
+                TextField("", text: $albumTitle, prompt: Text(title.isEmpty ? "untitled album" : title).foregroundStyle(theme.muted))
+                    .font(.wwav(24, weight: .light, italic: true))
+                    .foregroundStyle(theme.ink)
+                    .padding(.vertical, 8)
+                    .overlay(
+                        Rectangle().fill(theme.muted.opacity(0.3)).frame(height: 1),
+                        alignment: .bottom)
+            }
+
+            UploadField(label: "album caption") {
+                TextEditor(text: $albumCaption)
+                    .scrollContentBackground(.hidden)
+                    .font(.wwav(15, weight: .light))
+                    .foregroundStyle(theme.ink)
+                    .frame(minHeight: 72, maxHeight: 110)
+                    .padding(12)
+                    .background(boxBg)
+                    .overlay(boxStroke)
+            }
+
+            if library.albumCandidateTracks.isEmpty {
+                Text("this upload will start the album. add more tracks later from your library.")
+                    .font(.wwav(12, weight: .light, italic: true))
+                    .foregroundStyle(theme.muted)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(boxBg)
+                    .overlay(boxStroke)
+            } else {
+                TrackQueueEditor(
+                    title: "additional tracks",
+                    emptyMessage: "this upload starts the album; add more songs if you want",
+                    tracks: library.albumCandidateTracks,
+                    selectedIDs: $albumTrackIds
+                )
+            }
+        }
     }
 
     @ViewBuilder
@@ -358,17 +529,9 @@ private struct MusicUploadForm: View {
 
     private var uploadButton: some View {
         Button {
-            guard let f = pickedFile else { return }
-            let id = library.startUpload(
-                sourceURL: f.url,
-                title: title.isEmpty ? "untitled" : title,
-                bio: bio,
-                coverImage: coverData,
-                token: auth.token
-            )
-            inFlightID = id
+            submit()
         } label: {
-            Text(inFlightID == nil ? "upload track" : "uploading…")
+            Text(uploadButtonTitle)
                 .font(.wwav(15, weight: .regular, italic: true)).tracking(2)
                 .foregroundStyle(theme.glow)
                 .frame(maxWidth: .infinity).padding(.vertical, 16)
@@ -383,14 +546,582 @@ private struct MusicUploadForm: View {
         .buttonStyle(.plain).disabled(inFlightID != nil).opacity(inFlightID != nil ? 0.7 : 1.0)
     }
 
+    private var uploadButtonTitle: String {
+        if inFlightID != nil { return multitrackDraft == nil ? "uploading…" : "posted" }
+        if albumMode { return "upload track + album" }
+        return multitrackDraft == nil ? "upload track" : "post multitrack"
+    }
+
+    private func submit() {
+        let id: UUID
+        if let f = pickedFile {
+            id = library.startUpload(
+                sourceURL: f.url,
+                title: title.isEmpty ? "untitled" : title,
+                bio: bio,
+                coverImage: coverData,
+                token: auth.token
+            )
+        } else if let draft = multitrackDraft {
+            id = library.startMultitrackUpload(
+                stemURLs: draft.stemURLs,
+                title: title.isEmpty ? "untitled" : title,
+                bio: bio,
+                coverImage: coverData,
+                token: auth.token
+            )
+        } else {
+            return
+        }
+
+        inFlightID = id
+
+        if albumMode {
+            let finalAlbumTitle = albumTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? (title.isEmpty ? "untitled album" : title)
+                : albumTitle
+            _ = library.createAlbumPost(
+                title: finalAlbumTitle,
+                caption: albumCaption,
+                trackIds: [id] + albumTrackIds,
+                coverImage: albumCoverData ?? coverData,
+                token: auth.token
+            )
+        }
+    }
+
     private func cancel() {
         pickedFile = nil
+        multitrackDraft = nil
         title = ""
         bio = ""
         inFlightID = nil
         coverItem = nil
         coverImage = nil
         coverData = nil
+        albumMode = false
+        albumTitle = ""
+        albumCaption = ""
+        albumTrackIds = []
+        albumCoverItem = nil
+        albumCoverImage = nil
+        albumCoverData = nil
+    }
+
+    private func clearSource() {
+        pickedFile = nil
+        multitrackDraft = nil
+        inFlightID = nil
+    }
+}
+
+private struct MultitrackDraft: Equatable {
+    let stemURLs: [StemKind: URL]
+}
+
+private enum RecordingMode: String, CaseIterable, Identifiable {
+    case single
+    case multitrack
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .single: return "single"
+        case .multitrack: return "multitrack"
+        }
+    }
+}
+
+private struct RecordNowSheet: View {
+    let onSingleRecording: (URL) -> Void
+    let onMultitrackRecording: ([StemKind: URL]) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.theme) private var theme
+    @StateObject private var recorder = AudioRecorderModel()
+    @State private var mode: RecordingMode = .single
+    @State private var singleURL: URL?
+    @State private var stemURLs: [StemKind: URL] = [:]
+
+    private var multitrackComplete: Bool {
+        StemKind.allCases.allSatisfy { stemURLs[$0] != nil }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                theme.pageRadial.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Text("record now").wwavTitle(size: 36)
+                        modePicker
+
+                        if mode == .single {
+                            singleRecorder
+                        } else {
+                            multitrackRecorder
+                        }
+
+                        if let message = recorder.errorMessage {
+                            Text(message)
+                                .font(.wwav(12, weight: .light, italic: true))
+                                .foregroundStyle(Color.red.opacity(0.72))
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 22)
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("cancel") {
+                        recorder.cancel()
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.large])
+        .onDisappear { recorder.cancel() }
+    }
+
+    private var modePicker: some View {
+        HStack(spacing: 8) {
+            ForEach(RecordingMode.allCases) { option in
+                Button {
+                    guard !recorder.isRecording else { return }
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        mode = option
+                    }
+                } label: {
+                    Text(option.label)
+                        .font(.wwav(12, weight: mode == option ? .medium : .light, italic: true))
+                        .tracking(1.4)
+                        .foregroundStyle(mode == option ? theme.glow : theme.muted)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(
+                            Capsule().fill(mode == option ? theme.accent : theme.muted.opacity(0.10))
+                        )
+                        .overlay(Capsule().stroke(theme.muted.opacity(mode == option ? 0 : 0.22), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .disabled(recorder.isRecording)
+            }
+        }
+    }
+
+    private var singleRecorder: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("record one full take, then WWAV will split it into stems during upload.")
+                .font(.wwav(13, weight: .light, italic: true))
+                .foregroundStyle(theme.muted)
+
+            if let singleURL {
+                recordedFileRow(url: singleURL, title: "single take")
+            }
+
+            recordingButton(
+                title: recorder.isRecording ? "stop recording" : (singleURL == nil ? "record single take" : "record again"),
+                icon: recorder.isRecording ? "stop.fill" : "record.circle",
+                active: recorder.isRecording
+            ) {
+                if recorder.isRecording {
+                    singleURL = recorder.stop()
+                } else {
+                    singleURL = nil
+                    recorder.start(label: "single")
+                }
+            }
+
+            Button {
+                guard let singleURL else { return }
+                onSingleRecording(singleURL)
+                dismiss()
+            } label: {
+                primaryButtonLabel("use single take")
+            }
+            .buttonStyle(.plain)
+            .disabled(singleURL == nil || recorder.isRecording)
+            .opacity(singleURL == nil || recorder.isRecording ? 0.5 : 1)
+        }
+    }
+
+    private var multitrackRecorder: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("record directly into the four stem-player lanes.")
+                .font(.wwav(13, weight: .light, italic: true))
+                .foregroundStyle(theme.muted)
+
+            VStack(spacing: 0) {
+                ForEach(StemKind.allCases) { kind in
+                    multitrackRow(kind)
+                    if kind.id != (StemKind.allCases.last?.id ?? "") {
+                        Rectangle()
+                            .fill(theme.muted.opacity(0.14))
+                            .frame(height: 1)
+                            .padding(.leading, 54)
+                    }
+                }
+            }
+            .background(SheetBox.bg(theme))
+            .overlay(SheetBox.stroke(theme))
+
+            Button {
+                guard multitrackComplete else { return }
+                onMultitrackRecording(stemURLs)
+                dismiss()
+            } label: {
+                primaryButtonLabel("use multitrack")
+            }
+            .buttonStyle(.plain)
+            .disabled(!multitrackComplete || recorder.isRecording)
+            .opacity(!multitrackComplete || recorder.isRecording ? 0.5 : 1)
+        }
+    }
+
+    private func multitrackRow(_ kind: StemKind) -> some View {
+        let isActive = recorder.isRecording && recorder.activeLabel == kind.rawValue
+        let hasTake = stemURLs[kind] != nil
+        return HStack(spacing: 12) {
+            ZStack {
+                Circle().fill(isActive ? Color.red.opacity(0.78) : (hasTake ? theme.accent : theme.muted.opacity(0.14)))
+                Image(systemName: hasTake ? "checkmark" : "waveform")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(hasTake || isActive ? theme.glow : theme.muted)
+            }
+            .frame(width: 38, height: 38)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(kind.label)
+                    .font(.wwav(15, weight: .medium))
+                    .foregroundStyle(theme.ink)
+                Text(isActive ? recorder.formattedElapsed : (hasTake ? "recorded" : "empty lane"))
+                    .font(.wwav(10, weight: .light))
+                    .tracking(1)
+                    .foregroundStyle(theme.muted)
+            }
+
+            Spacer()
+
+            Button {
+                if isActive {
+                    if let url = recorder.stop() { stemURLs[kind] = url }
+                } else {
+                    recorder.start(label: kind.rawValue)
+                }
+            } label: {
+                Text(isActive ? "stop" : (hasTake ? "redo" : "record"))
+                    .font(.wwav(11, weight: .medium, italic: true))
+                    .tracking(1.2)
+                    .foregroundStyle(isActive ? theme.glow : theme.ink)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Capsule().fill(isActive ? Color.red.opacity(0.78) : theme.sand.opacity(0.74)))
+                    .overlay(Capsule().stroke(theme.muted.opacity(isActive ? 0 : 0.20), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .disabled(recorder.isRecording && !isActive)
+            .opacity(recorder.isRecording && !isActive ? 0.35 : 1)
+        }
+        .padding(12)
+    }
+
+    private func recordingButton(
+        title: String,
+        icon: String,
+        active: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .semibold))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.wwav(14, weight: .medium, italic: true))
+                    Text(active ? recorder.formattedElapsed : "microphone input")
+                        .font(.wwav(10, weight: .light))
+                        .tracking(1)
+                        .opacity(0.75)
+                }
+                Spacer()
+            }
+            .foregroundStyle(active ? theme.glow : theme.ink)
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(active ? Color.red.opacity(0.78) : theme.sand.opacity(0.68))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(theme.muted.opacity(active ? 0 : 0.22), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func recordedFileRow(url: URL, title: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "waveform")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(theme.glow)
+                .frame(width: 38, height: 38)
+                .background(Circle().fill(theme.accent))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.wwav(14, weight: .medium))
+                    .foregroundStyle(theme.ink)
+                Text(url.lastPathComponent)
+                    .font(.wwav(10, weight: .light))
+                    .foregroundStyle(theme.muted)
+                    .lineLimit(1)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(SheetBox.bg(theme))
+        .overlay(SheetBox.stroke(theme))
+    }
+
+    private func primaryButtonLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.wwav(15, weight: .regular, italic: true))
+            .tracking(2)
+            .foregroundStyle(theme.glow)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background(
+                Capsule().fill(
+                    LinearGradient(
+                        colors: [theme.clay, theme.clayDeep],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+            )
+    }
+}
+
+@MainActor
+private final class AudioRecorderModel: NSObject, ObservableObject {
+    @Published var isRecording: Bool = false
+    @Published var elapsed: TimeInterval = 0
+    @Published var errorMessage: String?
+    @Published var activeLabel: String?
+
+    private var recorder: AVAudioRecorder?
+    private var timer: Timer?
+
+    var formattedElapsed: String {
+        let seconds = max(0, Int(elapsed))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+
+    func start(label: String) {
+        guard !isRecording else { return }
+        errorMessage = nil
+        AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
+            Task { @MainActor in
+                guard let self else { return }
+                if granted {
+                    self.beginRecording(label: label)
+                } else {
+                    self.errorMessage = "microphone permission is needed to record."
+                }
+            }
+        }
+    }
+
+    func stop() -> URL? {
+        let url = recorder?.url
+        recorder?.stop()
+        recorder = nil
+        isRecording = false
+        activeLabel = nil
+        stopTimer()
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        try? AVAudioSession.sharedInstance().setActive(true)
+        return url
+    }
+
+    func cancel() {
+        _ = stop()
+    }
+
+    private func beginRecording(label: String) {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+            try session.setActive(true)
+
+            let safeLabel = label.replacingOccurrences(of: "/", with: "-")
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("wwav-\(safeLabel)-\(UUID().uuidString).wav")
+            let settings: [String: Any] = [
+                AVFormatIDKey: Int(kAudioFormatLinearPCM),
+                AVSampleRateKey: 44_100.0,
+                AVNumberOfChannelsKey: 1,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
+                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+            ]
+
+            let nextRecorder = try AVAudioRecorder(url: url, settings: settings)
+            nextRecorder.prepareToRecord()
+            nextRecorder.record()
+            recorder = nextRecorder
+            elapsed = 0
+            activeLabel = label
+            isRecording = true
+            startTimer()
+        } catch {
+            errorMessage = "couldn't start recording: \(error.localizedDescription)"
+            isRecording = false
+            activeLabel = nil
+        }
+    }
+
+    private func startTimer() {
+        stopTimer()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.elapsed = self.recorder?.currentTime ?? self.elapsed
+            }
+        }
+        if let timer { RunLoop.main.add(timer, forMode: .common) }
+    }
+
+    private func stopTimer() {
+        timer?.invalidate()
+        timer = nil
+    }
+}
+
+// MARK: – Album upload (groups existing songs)
+
+private struct AlbumUploadForm: View {
+    @EnvironmentObject var library: TrackLibrary
+    @EnvironmentObject var auth: AuthManager
+    @Environment(\.theme) private var theme
+
+    @State private var title: String = ""
+    @State private var caption: String = ""
+    @State private var selectedTrackIds: [UUID] = []
+    @State private var coverItem: PhotosPickerItem?
+    @State private var coverImage: UIImage?
+    @State private var coverData: Data?
+    @State private var lastPostedAt: Date?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack {
+                    Text("new album").wwavLabel(size: 11, tracking: 2.5)
+                    Spacer()
+                    if let posted = lastPostedAt, Date().timeIntervalSince(posted) < 6 {
+                        Text("posted")
+                            .font(.wwav(11, weight: .light, italic: true))
+                            .foregroundStyle(theme.accent)
+                    }
+                }
+                .padding(.top, 4)
+
+                Text("group songs into an album.")
+                    .wwavTitle(size: 36)
+
+                if library.albumCandidateTracks.isEmpty {
+                    Text("upload songs first, then come back here to assemble the album tracklist.")
+                        .font(.wwav(14, weight: .light, italic: true))
+                        .foregroundStyle(theme.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                        .background(SheetBox.bg(theme))
+                        .overlay(SheetBox.stroke(theme))
+                } else {
+                    UploadField(label: "cover art") {
+                        CoverPickerRow(
+                            coverItem: $coverItem,
+                            coverImage: $coverImage,
+                            coverData: $coverData
+                        )
+                    }
+
+                    UploadField(label: "album title") {
+                        TextField("", text: $title, prompt: Text("untitled album").foregroundStyle(theme.muted))
+                            .font(.wwav(24, weight: .light, italic: true))
+                            .foregroundStyle(theme.ink)
+                            .padding(.vertical, 8)
+                            .overlay(
+                                Rectangle().fill(theme.muted.opacity(0.3)).frame(height: 1),
+                                alignment: .bottom
+                            )
+                    }
+
+                    UploadField(label: "caption / notes") {
+                        TextEditor(text: $caption)
+                            .scrollContentBackground(.hidden)
+                            .font(.wwav(15, weight: .light))
+                            .foregroundStyle(theme.ink)
+                            .frame(minHeight: 84, maxHeight: 140)
+                            .padding(12)
+                            .background(SheetBox.bg(theme))
+                            .overlay(SheetBox.stroke(theme))
+                    }
+
+                    TrackQueueEditor(
+                        title: "tracklist",
+                        emptyMessage: "choose the songs for this album",
+                        tracks: library.albumCandidateTracks,
+                        selectedIDs: $selectedTrackIds
+                    )
+
+                    Button {
+                        _ = library.createAlbumPost(
+                            title: title,
+                            caption: caption,
+                            trackIds: selectedTrackIds,
+                            coverImage: coverData,
+                            token: auth.token
+                        )
+                        title = ""
+                        caption = ""
+                        selectedTrackIds = []
+                        coverItem = nil
+                        coverImage = nil
+                        coverData = nil
+                        lastPostedAt = Date()
+                    } label: {
+                        Text("post album")
+                            .font(.wwav(15, weight: .regular, italic: true))
+                            .tracking(2)
+                            .foregroundStyle(theme.glow)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(
+                                Capsule().fill(
+                                    LinearGradient(
+                                        colors: [theme.clay, theme.clayDeep],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                            )
+                            .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(selectedTrackIds.isEmpty)
+                    .opacity(selectedTrackIds.isEmpty ? 0.5 : 1)
+                    .padding(.top, 4)
+                }
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 12)
+            .padding(.bottom, 24)
+        }
     }
 }
 

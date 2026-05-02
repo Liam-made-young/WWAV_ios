@@ -94,6 +94,71 @@ final class TrackModelTests: XCTestCase {
         XCTAssertEqual(post.plays, 123)
     }
 
+    func testRemotePostDecodesEngagementMetrics() throws {
+        let json = """
+        {
+          "id": 9,
+          "kind": "video",
+          "title": "clip",
+          "views": 40,
+          "likeCount": "12",
+          "comment_count": 4,
+          "remixCount": 2,
+          "likedByMe": true,
+          "reposted_by_me": "1"
+        }
+        """.data(using: .utf8)!
+
+        let post = try JSONDecoder().decode(WWAVRemotePost.self, from: json)
+
+        XCTAssertEqual(post.plays, 40)
+        XCTAssertEqual(post.loves, 12)
+        XCTAssertEqual(post.comments, 4)
+        XCTAssertEqual(post.reposts, 2)
+        XCTAssertEqual(post.liked, true)
+        XCTAssertEqual(post.reposted, true)
+    }
+
+    func testRemotePostDecodesAlbumTrackIds() throws {
+        let json = """
+        {
+          "id": 11,
+          "kind": "album",
+          "title": "tape",
+          "trackIds": ["11111111-1111-1111-1111-111111111111", "track_remote"]
+        }
+        """.data(using: .utf8)!
+
+        let post = try JSONDecoder().decode(WWAVRemotePost.self, from: json)
+
+        XCTAssertEqual(post.kind, "album")
+        XCTAssertEqual(post.trackIds, [
+            "11111111-1111-1111-1111-111111111111",
+            "track_remote",
+        ])
+    }
+
+    func testAlbumTrackCodablePreservesTracklist() throws {
+        let first = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let second = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        let album = Track(
+            kind: .album,
+            title: "album",
+            artist: "tester",
+            handle: "tester",
+            bio: "notes",
+            albumTrackIds: [first, second],
+            status: .ready,
+            durationSeconds: 120
+        )
+
+        let decoded = try JSONDecoder().decode(Track.self, from: JSONEncoder().encode(album))
+
+        XCTAssertEqual(decoded.kind, .album)
+        XCTAssertEqual(decoded.albumTrackIds, [first, second])
+        XCTAssertEqual(decoded.thumbnailURL, nil)
+    }
+
     func testRemotePostDecodesRootAuthorVariants() throws {
         let json = """
         {
@@ -142,7 +207,38 @@ final class TrackModelTests: XCTestCase {
         XCTAssertEqual(FeedRanking.rank([fresh, evergreen], referenceDate: now).first?.id, evergreen.id)
     }
 
-    private func makeTrack(createdAt: Date, plays: Int) -> Track {
+    func testFeedRankingPromotesEngagementOverPureChronology() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let newer = makeTrack(
+            createdAt: now.addingTimeInterval(-60 * 60),
+            plays: 2
+        )
+        let engaged = makeTrack(
+            createdAt: now.addingTimeInterval(-48 * 60 * 60),
+            plays: 100,
+            loves: 30,
+            reposts: 5,
+            comments: 10
+        )
+
+        XCTAssertEqual(FeedRanking.rank([newer, engaged], referenceDate: now).first?.id, engaged.id)
+    }
+
+    func testFollowIdentityMatchesByUserIdAcrossHandleChanges() {
+        let identity = FollowIdentity(authorUserId: 12, handle: "old_name")
+
+        XCTAssertEqual(identity?.stableKey, "user:12")
+        XCTAssertEqual(identity?.matches(authorUserId: 12, handle: "new_name"), true)
+        XCTAssertEqual(identity?.matches(authorUserId: 13, handle: "old_name"), false)
+    }
+
+    private func makeTrack(
+        createdAt: Date,
+        plays: Int,
+        loves: Int = 0,
+        reposts: Int = 0,
+        comments: Int = 0
+    ) -> Track {
         Track(
             title: "post",
             artist: "tester",
@@ -151,7 +247,10 @@ final class TrackModelTests: XCTestCase {
             status: .ready,
             durationSeconds: 0,
             createdAt: createdAt,
-            plays: plays
+            plays: plays,
+            loves: loves,
+            reposts: reposts,
+            comments: comments
         )
     }
 }

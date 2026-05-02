@@ -11,6 +11,14 @@ struct ProfileView: View {
     @State private var showSettings = false
     @State private var editingPost: Track?
 
+    private var sectionTracks: [Track] {
+        switch sectionTab {
+        case 0: return library.myPosts
+        case 1: return library.remixedPosts
+        default: return library.likedPosts
+        }
+    }
+
     var body: some View {
         ZStack {
             theme.pageRadial.ignoresSafeArea()
@@ -55,7 +63,7 @@ struct ProfileView: View {
                     statsCard.padding(.horizontal, 24).padding(.top, 22)
 
                     HStack(spacing: 22) {
-                        ForEach(Array(["uploads", "waves", "liked"].enumerated()), id: \.offset) { i, label in
+                        ForEach(Array(["uploads", "remixes", "liked"].enumerated()), id: \.offset) { i, label in
                             VStack(spacing: 4) {
                                 Text(label)
                                     .font(.wwav(13, weight: .light, italic: true))
@@ -71,7 +79,7 @@ struct ProfileView: View {
                     }
                     .padding(.horizontal, 24).padding(.top, 24)
 
-                    let tracks = sectionTab == 0 ? library.myPosts : []
+                    let tracks = sectionTracks
                     if tracks.isEmpty {
                         VStack(spacing: 8) {
                             Text(emptyMessage(for: sectionTab))
@@ -84,6 +92,7 @@ struct ProfileView: View {
                             ForEach(Array(tracks.enumerated()), id: \.element.id) { idx, track in
                                 ProfileTrackRow(
                                     track: track,
+                                    canEdit: sectionTab == 0 && library.isAuthoredByCurrentUser(track),
                                     onTap: { nav.openPost(track, in: library, with: player) },
                                     onEdit: { editingPost = track }
                                 )
@@ -107,7 +116,7 @@ struct ProfileView: View {
     private func emptyMessage(for tab: Int) -> String {
         switch tab {
         case 0: return "no posts yet — head to the + tab to drop your first one."
-        case 1: return "no waves yet — waves are tracks you've remixed via stems."
+        case 1: return "no remixes yet — tap the remix control on a post to collect it here."
         default: return "no likes yet."
         }
     }
@@ -149,6 +158,7 @@ struct ProfileView: View {
 
 private struct ProfileTrackRow: View {
     let track: Track
+    let canEdit: Bool
     let onTap: () -> Void
     let onEdit: () -> Void
     @Environment(\.theme) private var theme
@@ -186,20 +196,22 @@ private struct ProfileTrackRow: View {
                             .background(Capsule().fill(theme.muted.opacity(0.14)))
                     }
                 }
-                Text(formatDate(track.createdAt) + " · \(track.plays) \(track.kind == .text || track.kind == .image ? "views" : "plays")")
+                Text(formatDate(track.createdAt) + " · \(track.plays) \(track.kind == .music || track.kind == .video ? "plays" : "views")")
                     .font(.wwav(11, weight: .light))
                     .tracking(1)
                     .foregroundStyle(theme.muted)
             }
             Spacer()
 
-            Button(action: onEdit) {
-                Image(systemName: "pencil")
-                    .font(.system(size: 13))
-                    .foregroundStyle(theme.muted)
-                    .padding(8)
+            if canEdit {
+                Button(action: onEdit) {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 13))
+                        .foregroundStyle(theme.muted)
+                        .padding(8)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             Button(action: onTap) {
                 ZStack {
@@ -223,7 +235,7 @@ private struct ProfileTrackRow: View {
     @ViewBuilder
     private var actionIcon: some View {
         switch track.kind {
-        case .music, .video:
+        case .music, .album, .video:
             Triangle().fill(theme.glow).frame(width: 8, height: 10).offset(x: 1)
         case .image:
             Image(systemName: "photo")
@@ -264,7 +276,7 @@ private struct ProfileTrackRow: View {
     @ViewBuilder
     private var thumbnail: some View {
         switch track.kind {
-        case .music, .video, .image:
+        case .music, .album, .video, .image:
             ZStack {
                 LinearGradient(colors: [theme.clay.opacity(0.25), theme.clayDeep.opacity(0.15)],
                                startPoint: .topLeading, endPoint: .bottomTrailing)

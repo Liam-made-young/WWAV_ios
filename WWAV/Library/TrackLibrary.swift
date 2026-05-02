@@ -1,5 +1,48 @@
 import Foundation
 import Combine
+import AVFoundation
+
+struct FollowIdentity: Codable, Hashable {
+    let authorUserId: Int?
+    let handle: String
+
+    init?(authorUserId: Int?, handle: String) {
+        let normalized = handle.normalizedHandle
+        guard authorUserId != nil || !normalized.isEmpty else { return nil }
+        self.authorUserId = authorUserId
+        self.handle = normalized
+    }
+
+    var stableKey: String {
+        if let authorUserId { return "user:\(authorUserId)" }
+        return "handle:\(handle)"
+    }
+
+    func matches(authorUserId: Int?, handle rawHandle: String) -> Bool {
+        if let lhs = self.authorUserId, let rhs = authorUserId {
+            return lhs == rhs
+        }
+        let normalized = rawHandle.normalizedHandle
+        return !handle.isEmpty && handle == normalized
+    }
+}
+
+struct RadioSession: Identifiable, Codable, Equatable {
+    var id: UUID = .init()
+    var title: String
+    var notes: String
+    var hostName: String
+    var hostHandle: String
+    var queueTrackIds: [UUID]
+    var currentIndex: Int = 0
+    var isLive: Bool = false
+    var startedAt: Date?
+    var createdAt: Date = .init()
+
+    var normalizedHostHandle: String {
+        hostHandle.normalizedHandle
+    }
+}
 
 enum FeedRanking {
     static func rank(_ tracks: [Track], referenceDate: Date = Date()) -> [Track] {
@@ -15,18 +58,25 @@ enum FeedRanking {
     static func score(_ track: Track, referenceDate: Date = Date()) -> Double {
         let ageHours = max(0, referenceDate.timeIntervalSince(track.createdAt) / 3600)
         let views = Double(max(0, track.plays))
+        let likes = Double(max(0, track.loves))
+        let reposts = Double(max(0, track.reposts))
+        let comments = Double(max(0, track.comments))
         let socialProof = log1p(views)
+        let engagement = (likes * 2.4) + (comments * 3.2) + (reposts * 4.0)
+        let engagementProof = log1p(engagement)
+        let engagementRate = views > 0 ? min(1.0, engagement / max(views, 1)) : min(1.0, engagement / 4)
 
         // Fresh posts get a real audition window, then the boost fades.
         let recency = 28 * exp(-ageHours / 36)
         let firstDayOpportunity = max(0, 1 - (ageHours / 18)) * 10
 
         // Fast early traction matters more than slow accumulated views.
-        let velocity = 30 * (socialProof / pow(ageHours + 2, 0.65))
+        let velocity = 30 * ((socialProof + engagementProof * 1.7) / pow(ageHours + 2, 0.65))
 
-        // Old high-view posts still surface sometimes instead of aging out
-        // completely.
-        let evergreen = 4.5 * socialProof
+        // Old high-engagement posts still surface sometimes instead of
+        // aging out completely.
+        let evergreen = 4.5 * socialProof + 8.0 * engagementProof
+        let quality = 12 * engagementRate * exp(-ageHours / 96)
 
         // Small deterministic rotation prevents permanent ties and gives
         // fresh low-view posts a little exploration without random UI jumps.
@@ -34,7 +84,7 @@ enum FeedRanking {
         let explorationWindow = ageHours <= 48 ? 5.0 : 2.0
         let exploration = stableNoise(for: track.id, salt: daySalt) * explorationWindow
 
-        return recency + firstDayOpportunity + velocity + evergreen + exploration
+        return recency + firstDayOpportunity + velocity + evergreen + quality + exploration
     }
 
     private static func stableNoise(for id: UUID, salt: Int) -> Double {
@@ -68,6 +118,7 @@ final class TrackLibrary: ObservableObject {
     @Published private(set) var myTracks: [Track] = []
     @Published private(set) var feed: [Track] = []
     @Published private(set) var profile: UserProfile
+    @Published private(set) var radioSessions: [RadioSession] = []
 
     /// Tombstone set of every server-side trackId the user has deleted from
     /// this app. Persists across launches AND across app reinstalls (via
@@ -88,6 +139,10 @@ final class TrackLibrary: ObservableObject {
     /// server-side metadata PUT silently failed. On every refresh we
     /// overlay these onto the server response — local edits always win.
     @Published private(set) var localEdits: [String: LocalEdit] = [:]
+    /// Accounts the signed-in user follows from iOS. The server call is
+    /// best-effort because deployed follow endpoints have varied over time;
+    /// this set keeps the app's follow/following logic responsive locally.
+    @Published private(set) var followedAccounts: Set<FollowIdentity> = []
 
     let storage: StorageService
     let separator: StemSeparationService
@@ -123,10 +178,12 @@ final class TrackLibrary: ObservableObject {
         self.profile = state.profile
         self.myTracks = state.myTracks
         self.feed = state.feed
+        self.radioSessions = state.radioSessions
         self.deletedTrackIds = state.deletedTrackIds
         self.deletedPostUUIDs = state.deletedPostUUIDs
         self.deletedRemotePostIds = state.deletedRemotePostIds
         self.localEdits = state.localEdits
+        self.followedAccounts = state.followedAccounts
 
         // Keychain is the durable source of truth for tombstones + edits
         // because it's the only thing on iOS that survives an app reinstall.
@@ -153,6 +210,9 @@ final class TrackLibrary: ObservableObject {
                     self.localEdits[k] = v
                 }
             }
+        }
+        if let restoredFollows = WWAVKeychain.json(Set<FollowIdentity>.self, for: WWAVKeychainKeys.followedAccounts) {
+            self.followedAccounts.formUnion(restoredFollows)
         }
 
         // Defensive: scrub anything that survived in myTracks/feed despite
@@ -197,9 +257,49 @@ final class TrackLibrary: ObservableObject {
         myTracks.filter(isAuthoredByCurrentUser).sorted { $0.createdAt > $1.createdAt }
     }
 
+    var albumCandidateTracks: [Track] {
+        uniqueTracks(from: myTracks + feed)
+            .filter { track in
+                guard track.kind == .music else { return false }
+                if case .ready = track.status { return true }
+                return false
+            }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    var liveRadioSessions: [RadioSession] {
+        radioSessions
+            .filter(\.isLive)
+            .sorted { lhs, rhs in
+                (lhs.startedAt ?? lhs.createdAt) > (rhs.startedAt ?? rhs.createdAt)
+            }
+    }
+
     var trackCount: Int { myPosts.count }
     var totalPlays: Int { myPosts.reduce(0) { $0 + $1.plays } }
     var totalLoves: Int { myPosts.reduce(0) { $0 + $1.loves } }
+
+    func albumTracks(for album: Track) -> [Track] {
+        tracks(for: album.albumTrackIds ?? [])
+    }
+
+    func tracks(for session: RadioSession) -> [Track] {
+        tracks(for: session.queueTrackIds)
+    }
+
+    func currentTrack(for session: RadioSession) -> Track? {
+        let queued = tracks(for: session)
+        guard !queued.isEmpty else { return nil }
+        let safeIndex = min(max(0, session.currentIndex), queued.count - 1)
+        return queued[safeIndex]
+    }
+
+    private func tracks(for ids: [UUID]) -> [Track] {
+        guard !ids.isEmpty else { return [] }
+        let pool = uniqueTracks(from: myTracks + feed)
+        let byID = Dictionary(uniqueKeysWithValues: pool.map { ($0.id, $0) })
+        return ids.compactMap { byID[$0] }
+    }
 
     func posts(for route: PublicProfileRoute) -> [Track] {
         posts(authorUserId: route.authorUserId, handle: route.handle)
@@ -220,12 +320,76 @@ final class TrackLibrary: ObservableObject {
         return pool.sorted { $0.createdAt > $1.createdAt }
     }
 
-    func isAuthoredByCurrentUser(_ track: Track) -> Bool {
-        if let currentId = profile.remoteUserId, let authorId = track.authorUserId {
-            return currentId == authorId
+    func feed(for tab: Int) -> [Track] {
+        switch tab {
+        case 1:
+            return FeedRanking.rank(feed.filter(isFollowedAuthor))
+        case 2:
+            return FeedRanking.rank(feed.filter { track in
+                isAuthoredByCurrentUser(track)
+                    || isFollowedAuthor(track)
+                    || track.liked
+                    || track.reposted
+            })
+        default:
+            return feed
         }
-        guard track.authorUserId == nil else { return false }
-        return track.handle.lowercased() == profile.handle.lowercased()
+    }
+
+    var likedPosts: [Track] {
+        uniqueTracks(from: feed + myTracks)
+            .filter(\.liked)
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    var remixedPosts: [Track] {
+        uniqueTracks(from: feed + myTracks)
+            .filter(\.reposted)
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    func isAuthoredByCurrentUser(_ track: Track) -> Bool {
+        isCurrentUser(authorUserId: track.authorUserId, handle: track.handle)
+    }
+
+    func isCurrentUser(authorUserId: Int?, handle: String) -> Bool {
+        if let currentId = profile.remoteUserId, let authorUserId {
+            return currentId == authorUserId
+        }
+        guard authorUserId == nil else { return false }
+        return handle.normalizedHandle == profile.handle.normalizedHandle
+    }
+
+    func canFollow(authorUserId: Int?, handle: String) -> Bool {
+        FollowIdentity(authorUserId: authorUserId, handle: handle) != nil
+            && !isCurrentUser(authorUserId: authorUserId, handle: handle)
+    }
+
+    func canFollow(_ track: Track) -> Bool {
+        canFollow(authorUserId: track.authorUserId, handle: track.handle)
+    }
+
+    func isFollowing(authorUserId: Int?, handle: String) -> Bool {
+        guard canFollow(authorUserId: authorUserId, handle: handle) else { return false }
+        return followedAccounts.contains { $0.matches(authorUserId: authorUserId, handle: handle) }
+    }
+
+    func isFollowing(_ track: Track) -> Bool {
+        isFollowing(authorUserId: track.authorUserId, handle: track.handle)
+    }
+
+    func isFollowedAuthor(_ track: Track) -> Bool {
+        isFollowing(track)
+    }
+
+    private func uniqueTracks(from tracks: [Track]) -> [Track] {
+        var seen: Set<UUID> = []
+        return tracks.filter { seen.insert($0.id).inserted }
+    }
+
+    private func orderedUnique(_ ids: [UUID]) -> [UUID] {
+        var seen: Set<UUID> = []
+        return ids.filter { seen.insert($0).inserted }
     }
 
     // MARK: – Profile editing
@@ -397,6 +561,100 @@ final class TrackLibrary: ObservableObject {
                 self.markFailed(id: id, message: error.localizedDescription)
             }
         }
+        return id
+    }
+
+    /// Publishes four user-recorded stems directly into the stem player.
+    /// This is the multitrack recording path: no Demucs split is needed
+    /// because the user already recorded vox / bass / drum / synth lanes.
+    @discardableResult
+    func startMultitrackUpload(
+        stemURLs: [StemKind: URL],
+        title: String,
+        bio: String,
+        coverImage: Data? = nil,
+        token: String? = nil
+    ) -> UUID {
+        let id = UUID()
+        let track = Track(
+            id: id,
+            kind: .music,
+            title: title.isEmpty ? "untitled" : title,
+            artist: profile.name,
+            handle: profile.handle,
+            authorUserId: profile.remoteUserId,
+            authorProfilePicture: profile.profilePicture,
+            bio: bio,
+            stems: nil,
+            stemObjectKeys: nil,
+            status: .uploading(phase: .saving, progress: 0),
+            durationSeconds: 0
+        )
+        myTracks.insert(track, at: 0)
+        rebuildFeed()
+        persist()
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                var savedURLs: [StemKind: URL] = [:]
+                var keys: [String: String] = [:]
+                var maxDuration: Double = 0
+                let total = Double(StemKind.allCases.count)
+
+                for (index, kind) in StemKind.allCases.enumerated() {
+                    guard let source = stemURLs[kind] else {
+                        throw StemSeparationError.incompleteStems
+                    }
+                    let scoped = source.startAccessingSecurityScopedResource()
+                    defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+                    let ext = source.pathExtension.isEmpty ? "wav" : source.pathExtension
+                    let key = "uploads/\(id.uuidString)/recorded_stems/\(kind.demucsName).\(ext)"
+                    let cached = try await self.storage.putFile(
+                        at: source,
+                        key: key,
+                        contentType: "audio/wav"
+                    )
+                    savedURLs[kind] = cached
+                    keys[kind.demucsName] = key
+                    maxDuration = max(maxDuration, Self.audioDuration(url: cached))
+                    let progress = Double(index + 1) / total
+                    self.update(id: id) { $0.status = .uploading(phase: .saving, progress: progress) }
+                }
+
+                guard let vox = savedURLs[.vox],
+                      let bass = savedURLs[.bass],
+                      let drum = savedURLs[.drum],
+                      let synth = savedURLs[.synth] else {
+                    throw StemSeparationError.incompleteStems
+                }
+
+                var coverPath: String?
+                if let coverImage {
+                    if let token {
+                        coverPath = try? await Self.uploadCoverImage(coverImage, token: token)
+                    }
+                    if coverPath == nil {
+                        let coverKey = "uploads/\(id.uuidString)/cover.jpg"
+                        if let local = try? await self.storage.put(coverImage, key: coverKey, contentType: "image/jpeg") {
+                            coverPath = local.absoluteString
+                        }
+                    }
+                }
+
+                let bundle = StemBundle(vox: vox, bass: bass, drum: drum, synth: synth)
+                self.update(id: id) {
+                    $0.stems = bundle
+                    $0.stemObjectKeys = keys
+                    $0.coverArtUrl = coverPath
+                    $0.durationSeconds = maxDuration
+                    $0.status = .ready
+                }
+            } catch {
+                self.markFailed(id: id, message: error.localizedDescription)
+            }
+        }
+
         return id
     }
 
@@ -634,6 +892,163 @@ final class TrackLibrary: ObservableObject {
             }
         }
         return id
+    }
+
+    @discardableResult
+    func createAlbumPost(
+        title: String,
+        caption: String,
+        trackIds: [UUID],
+        coverImage: Data? = nil,
+        token: String? = nil
+    ) -> UUID {
+        let uniqueTrackIds = orderedUnique(trackIds)
+        let albumTracks = tracks(for: uniqueTrackIds)
+        let fallbackCover = albumTracks.first?.coverArtUrl
+        let id = UUID()
+        let finalTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "untitled album"
+            : title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let totalDuration = albumTracks.reduce(0) { $0 + $1.durationSeconds }
+        let track = Track(
+            id: id,
+            kind: .album,
+            title: finalTitle,
+            artist: profile.name,
+            handle: profile.handle,
+            authorUserId: profile.remoteUserId,
+            authorProfilePicture: profile.profilePicture,
+            bio: caption,
+            coverArtUrl: fallbackCover,
+            albumTrackIds: uniqueTrackIds,
+            status: .ready,
+            durationSeconds: totalDuration
+        )
+        myTracks.insert(track, at: 0)
+        rebuildFeed()
+        persist()
+
+        Task { [weak self] in
+            guard let self else { return }
+            var coverPath = fallbackCover
+            if let coverImage {
+                if let token {
+                    coverPath = (try? await Self.uploadCoverImage(coverImage, token: token)) ?? coverPath
+                }
+                if coverPath == nil {
+                    let coverKey = "uploads/\(id.uuidString)/album_cover.jpg"
+                    if let local = try? await self.storage.put(coverImage, key: coverKey, contentType: "image/jpeg") {
+                        coverPath = local.absoluteString
+                    }
+                }
+            }
+            if let coverPath {
+                self.update(id: id) { $0.coverArtUrl = coverPath }
+            }
+            if let token {
+                let platformCover = coverPath.flatMap { Self.isPlatformAssetPath($0) ? $0 : nil }
+                if let postId = await Self.createRemotePost(
+                    kind: "album",
+                    title: finalTitle,
+                    content: caption.isEmpty ? nil : caption,
+                    coverImageUrl: platformCover,
+                    trackIds: uniqueTrackIds.map(\.uuidString),
+                    token: token
+                ) {
+                    self.update(id: id) { $0.remotePostId = postId }
+                }
+            }
+        }
+
+        return id
+    }
+
+    func updateAlbumTracklist(id: UUID, trackIds: [UUID], token: String? = nil) {
+        let uniqueTrackIds = orderedUnique(trackIds)
+        let selectedTracks = tracks(for: uniqueTrackIds)
+        let totalDuration = selectedTracks.reduce(0) { $0 + $1.durationSeconds }
+        let fallbackCover = selectedTracks.first?.coverArtUrl
+        update(id: id) {
+            $0.albumTrackIds = uniqueTrackIds
+            $0.durationSeconds = totalDuration
+            if ($0.coverArtUrl ?? "").isEmpty {
+                $0.coverArtUrl = fallbackCover
+            }
+        }
+
+        guard let token,
+              let postId = myTracks.first(where: { $0.id == id })?.remotePostId else { return }
+        Task {
+            _ = try? await API.request(
+                "/api/posts/\(postId)",
+                method: "PATCH",
+                body: ["trackIds": uniqueTrackIds.map(\.uuidString)],
+                token: token
+            )
+        }
+    }
+
+    func startRadio(title: String, notes: String, queueTrackIds: [UUID]) -> UUID {
+        let queue = orderedUnique(queueTrackIds)
+        guard !queue.isEmpty else { return UUID() }
+        let finalTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "\(profile.name)'s radio"
+            : title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let idx = radioSessions.firstIndex(where: {
+            $0.normalizedHostHandle == profile.handle.normalizedHandle
+        }) {
+            radioSessions[idx].title = finalTitle
+            radioSessions[idx].notes = notes
+            radioSessions[idx].hostName = profile.name
+            radioSessions[idx].hostHandle = profile.handle
+            radioSessions[idx].queueTrackIds = queue
+            radioSessions[idx].currentIndex = min(radioSessions[idx].currentIndex, max(0, queue.count - 1))
+            radioSessions[idx].isLive = true
+            radioSessions[idx].startedAt = radioSessions[idx].startedAt ?? Date()
+            persist()
+            return radioSessions[idx].id
+        }
+
+        let session = RadioSession(
+            title: finalTitle,
+            notes: notes,
+            hostName: profile.name,
+            hostHandle: profile.handle,
+            queueTrackIds: queue,
+            currentIndex: 0,
+            isLive: true,
+            startedAt: Date()
+        )
+        radioSessions.insert(session, at: 0)
+        persist()
+        return session.id
+    }
+
+    func updateRadioSession(id: UUID, title: String, notes: String, queueTrackIds: [UUID]) {
+        guard let idx = radioSessions.firstIndex(where: { $0.id == id }) else { return }
+        let queue = orderedUnique(queueTrackIds)
+        radioSessions[idx].title = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? radioSessions[idx].title
+            : title.trimmingCharacters(in: .whitespacesAndNewlines)
+        radioSessions[idx].notes = notes
+        radioSessions[idx].queueTrackIds = queue
+        radioSessions[idx].currentIndex = min(radioSessions[idx].currentIndex, max(0, queue.count - 1))
+        persist()
+    }
+
+    func stopRadio(id: UUID) {
+        guard let idx = radioSessions.firstIndex(where: { $0.id == id }) else { return }
+        radioSessions[idx].isLive = false
+        radioSessions[idx].startedAt = nil
+        persist()
+    }
+
+    func advanceRadio(id: UUID) {
+        guard let idx = radioSessions.firstIndex(where: { $0.id == id }),
+              !radioSessions[idx].queueTrackIds.isEmpty else { return }
+        radioSessions[idx].currentIndex =
+            (radioSessions[idx].currentIndex + 1) % radioSessions[idx].queueTrackIds.count
+        persist()
     }
 
     // MARK: – Metadata editing
@@ -1049,13 +1464,59 @@ final class TrackLibrary: ObservableObject {
         )
     }
 
+    private static func audioDuration(url: URL) -> Double {
+        guard let file = try? AVAudioFile(forReading: url) else { return 0 }
+        let sampleRate = file.processingFormat.sampleRate
+        guard sampleRate > 0 else { return 0 }
+        return Double(file.length) / sampleRate
+    }
+
     func incrementPlays(of id: UUID) {
         update(id: id) { $0.plays += 1 }
-        rebuildFeed()
-        persist()
     }
 
     // MARK: – Social actions
+
+    @MainActor
+    func toggleFollow(track: Track, token: String?) async {
+        await toggleFollow(
+            authorUserId: track.authorUserId,
+            handle: track.handle,
+            token: token
+        )
+    }
+
+    @MainActor
+    func toggleFollow(route: PublicProfileRoute, token: String?) async {
+        await toggleFollow(
+            authorUserId: route.authorUserId,
+            handle: route.handle,
+            token: token
+        )
+    }
+
+    @MainActor
+    func toggleFollow(authorUserId: Int?, handle: String, token: String?) async {
+        guard canFollow(authorUserId: authorUserId, handle: handle),
+              let identity = FollowIdentity(authorUserId: authorUserId, handle: handle) else { return }
+        let wasFollowing = isFollowing(authorUserId: authorUserId, handle: handle)
+        if wasFollowing {
+            followedAccounts = Set(followedAccounts.filter {
+                !$0.matches(authorUserId: authorUserId, handle: handle)
+            })
+        } else {
+            followedAccounts.insert(identity)
+        }
+        rebuildFeed()
+        persist()
+
+        guard let token else { return }
+        do {
+            try await Self.pushFollow(identity: identity, shouldFollow: !wasFollowing, token: token)
+        } catch {
+            print("[Library] follow sync failed for \(identity.stableKey): \(error)")
+        }
+    }
 
     /// Toggles a like for `track` on the server and reflects the new state
     /// locally. Optimistic — updates the UI immediately, then reverts on
@@ -1199,6 +1660,49 @@ final class TrackLibrary: ObservableObject {
             $0.reposted = !prev
             $0.reposts = max(0, $0.reposts + (prev ? -1 : 1))
         }
+    }
+
+    private struct FollowRequestCandidate {
+        let path: String
+        let method: String
+        let body: [String: Any]?
+    }
+
+    private static func pushFollow(
+        identity: FollowIdentity,
+        shouldFollow: Bool,
+        token: String
+    ) async throws {
+        var candidates: [FollowRequestCandidate] = []
+        if let userId = identity.authorUserId {
+            candidates.append(contentsOf: [
+                FollowRequestCandidate(path: "/api/social/follow/\(userId)", method: shouldFollow ? "POST" : "DELETE", body: nil),
+                FollowRequestCandidate(path: "/api/users/\(userId)/follow", method: shouldFollow ? "POST" : "DELETE", body: nil),
+                FollowRequestCandidate(path: "/api/follow/\(userId)", method: shouldFollow ? "POST" : "DELETE", body: nil),
+                FollowRequestCandidate(path: "/api/social/follow", method: shouldFollow ? "POST" : "DELETE", body: ["userId": userId]),
+            ])
+        }
+        candidates.append(contentsOf: [
+            FollowRequestCandidate(path: "/api/social/follow/@\(identity.handle)", method: shouldFollow ? "POST" : "DELETE", body: nil),
+            FollowRequestCandidate(path: "/api/follow/@\(identity.handle)", method: shouldFollow ? "POST" : "DELETE", body: nil),
+            FollowRequestCandidate(path: "/api/social/follow", method: shouldFollow ? "POST" : "DELETE", body: ["handle": identity.handle]),
+        ])
+
+        var lastError: Error?
+        for candidate in candidates {
+            do {
+                _ = try await API.request(
+                    candidate.path,
+                    method: candidate.method,
+                    body: candidate.body,
+                    token: token
+                )
+                return
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError ?? APIError.unknown
     }
 
     /// Returns a Track whose `.stems` are guaranteed to be on disk and ready
@@ -1451,6 +1955,21 @@ final class TrackLibrary: ObservableObject {
                 if let plays = r.plays {
                     existing.plays = max(existing.plays, plays)
                 }
+                if let loves = r.loves {
+                    existing.loves = max(existing.loves, loves)
+                }
+                if let reposts = r.reposts {
+                    existing.reposts = max(existing.reposts, reposts)
+                }
+                if let comments = r.comments {
+                    existing.comments = max(existing.comments, comments)
+                }
+                if let liked = r.liked {
+                    existing.liked = liked
+                }
+                if let reposted = r.reposted {
+                    existing.reposted = reposted
+                }
 
                 // Server cover only fills in when the local row has none;
                 // anything else is overridden by `localEdits` below.
@@ -1484,7 +2003,12 @@ final class TrackLibrary: ObservableObject {
                     status: trackStatus,
                     durationSeconds: 0,
                     createdAt: r.parsedCreatedAt ?? Date(),
-                    plays: r.plays ?? 0
+                    plays: r.plays ?? 0,
+                    loves: r.loves ?? 0,
+                    reposts: r.reposts ?? 0,
+                    comments: r.comments ?? 0,
+                    liked: r.liked ?? false,
+                    reposted: r.reposted ?? false
                 )
                 rebuilt.append(new)
             }
@@ -1629,6 +2153,7 @@ final class TrackLibrary: ObservableObject {
 
             let kind: PostKind = {
                 switch r.kind {
+                case "album": return .album
                 case "image": return .image
                 case "video": return .video
                 default: return .text
@@ -1644,6 +2169,21 @@ final class TrackLibrary: ObservableObject {
                 if let plays = r.plays {
                     existing.plays = max(existing.plays, plays)
                 }
+                if let loves = r.loves {
+                    existing.loves = max(existing.loves, loves)
+                }
+                if let reposts = r.reposts {
+                    existing.reposts = max(existing.reposts, reposts)
+                }
+                if let comments = r.comments {
+                    existing.comments = max(existing.comments, comments)
+                }
+                if let liked = r.liked {
+                    existing.liked = liked
+                }
+                if let reposted = r.reposted {
+                    existing.reposted = reposted
+                }
                 if kind == .image, let imgs = r.images, !imgs.isEmpty {
                     existing.imageUrls = imgs
                     existing.coverArtUrl = r.coverImageUrl ?? imgs.first ?? existing.coverArtUrl
@@ -1651,6 +2191,10 @@ final class TrackLibrary: ObservableObject {
                 if kind == .video, let vKey = r.videoUrl {
                     let stripped = vKey.hasPrefix("videos/") ? String(vKey.dropFirst(7)) : vKey
                     existing.videoURL = URL(string: "\(API.base)/api/videos/\(stripped)")
+                    existing.coverArtUrl = r.coverImageUrl ?? existing.coverArtUrl
+                }
+                if kind == .album {
+                    existing.albumTrackIds = localAlbumTrackIds(from: r.trackIds) ?? existing.albumTrackIds
                     existing.coverArtUrl = r.coverImageUrl ?? existing.coverArtUrl
                 }
                 if kind == .text { existing.textBody = r.content ?? existing.textBody }
@@ -1662,19 +2206,27 @@ final class TrackLibrary: ObservableObject {
                 var t = Track(
                     id: UUID(),
                     kind: kind,
-                    title: r.title ?? (kind == .image ? "image post" : kind == .video ? "video" : "text post"),
+                    title: r.title ?? defaultTitle(for: kind),
                     artist: name,
                     handle: name,
                     authorUserId: author?.id,
                     authorProfilePicture: author?.profilePicture,
                     bio: r.content ?? "",
                     remotePostId: r.id,
+                    albumTrackIds: kind == .album ? localAlbumTrackIds(from: r.trackIds) : nil,
                     status: .ready,
                     durationSeconds: 0,
                     createdAt: r.parsedCreatedAt ?? Date(),
-                    plays: r.plays ?? 0
+                    plays: r.plays ?? 0,
+                    loves: r.loves ?? 0,
+                    reposts: r.reposts ?? 0,
+                    comments: r.comments ?? 0,
+                    liked: r.liked ?? false,
+                    reposted: r.reposted ?? false
                 )
                 switch kind {
+                case .album:
+                    t.coverArtUrl = r.coverImageUrl
                 case .image:
                     t.imageUrls = r.images
                     t.coverArtUrl = r.coverImageUrl ?? r.images?.first
@@ -1704,6 +2256,27 @@ final class TrackLibrary: ObservableObject {
         myTracks.sort { $0.createdAt > $1.createdAt }
         rebuildFeed()
         persist()
+    }
+
+    private func defaultTitle(for kind: PostKind) -> String {
+        switch kind {
+        case .music: return "untitled"
+        case .album: return "untitled album"
+        case .image: return "image post"
+        case .text: return "text post"
+        case .video: return "video"
+        }
+    }
+
+    private func localAlbumTrackIds(from rawTrackIds: [String]?) -> [UUID]? {
+        guard let rawTrackIds else { return nil }
+        let ids = rawTrackIds.compactMap { raw -> UUID? in
+            let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleaned.isEmpty else { return nil }
+            if let uuid = UUID(uuidString: cleaned) { return uuid }
+            return uuidFromTrackId(cleaned)
+        }
+        return ids.isEmpty ? nil : orderedUnique(ids)
     }
 
     /// Publishes local-only image/text/video posts once the user is signed in.
@@ -1753,6 +2326,16 @@ final class TrackLibrary: ObservableObject {
                 content: track.bio.isEmpty ? nil : track.bio,
                 videoUrl: videoKey,
                 coverImageUrl: cover,
+                token: token
+            )
+        case .album:
+            let cover = await uploadOptionalImageForPlatform(track.coverArtUrl, token: token)
+            return await Self.createRemotePost(
+                kind: "album",
+                title: track.title,
+                content: track.bio.isEmpty ? nil : track.bio,
+                coverImageUrl: cover,
+                trackIds: (track.albumTrackIds ?? []).map(\.uuidString),
                 token: token
             )
         case .music:
@@ -1824,6 +2407,7 @@ final class TrackLibrary: ObservableObject {
         images: [String]? = nil,
         videoUrl: String? = nil,
         coverImageUrl: String? = nil,
+        trackIds: [String]? = nil,
         token: String
     ) async -> Int? {
         var body: [String: Any] = ["kind": kind, "title": title]
@@ -1831,6 +2415,7 @@ final class TrackLibrary: ObservableObject {
         if let images  { body["images"]  = images  }
         if let videoUrl     { body["videoUrl"]     = videoUrl     }
         if let coverImageUrl { body["coverImageUrl"] = coverImageUrl }
+        if let trackIds { body["trackIds"] = trackIds }
         struct Resp: Decodable { let id: Int }
         do {
             let data = try await API.post("/api/posts", body: body, token: token)
@@ -1870,6 +2455,7 @@ final class TrackLibrary: ObservableObject {
         if let idx = feed.firstIndex(where: { $0.id == id }) {
             mutate(&feed[idx])
         }
+        rebuildFeed()
         persist()
     }
 
@@ -1900,6 +2486,7 @@ final class TrackLibrary: ObservableObject {
         var profile: UserProfile
         var myTracks: [Track]
         var feed: [Track]
+        var radioSessions: [RadioSession] = []
         // Tombstones + local edits live in library.json AND in the keychain
         // (mirrored on every persist). Keychain is the durable store across
         // app reinstalls; library.json is the fast session-level cache.
@@ -1908,23 +2495,28 @@ final class TrackLibrary: ObservableObject {
         var deletedPostUUIDs: Set<UUID> = []
         var deletedRemotePostIds: Set<Int> = []
         var localEdits: [String: LocalEdit] = [:]
+        var followedAccounts: Set<FollowIdentity> = []
 
         enum CodingKeys: String, CodingKey {
-            case profile, myTracks, feed
-            case deletedTrackIds, deletedPostUUIDs, deletedRemotePostIds, localEdits
+            case profile, myTracks, feed, radioSessions
+            case deletedTrackIds, deletedPostUUIDs, deletedRemotePostIds, localEdits, followedAccounts
         }
 
         init(profile: UserProfile, myTracks: [Track], feed: [Track],
+             radioSessions: [RadioSession] = [],
              deletedTrackIds: Set<String> = [], deletedPostUUIDs: Set<UUID> = [],
              deletedRemotePostIds: Set<Int> = [],
-             localEdits: [String: LocalEdit] = [:]) {
+             localEdits: [String: LocalEdit] = [:],
+             followedAccounts: Set<FollowIdentity> = []) {
             self.profile = profile
             self.myTracks = myTracks
             self.feed = feed
+            self.radioSessions = radioSessions
             self.deletedTrackIds = deletedTrackIds
             self.deletedPostUUIDs = deletedPostUUIDs
             self.deletedRemotePostIds = deletedRemotePostIds
             self.localEdits = localEdits
+            self.followedAccounts = followedAccounts
         }
 
         init(from decoder: Decoder) throws {
@@ -1932,10 +2524,12 @@ final class TrackLibrary: ObservableObject {
             self.profile = try c.decode(UserProfile.self, forKey: .profile)
             self.myTracks = try c.decode([Track].self, forKey: .myTracks)
             self.feed = try c.decode([Track].self, forKey: .feed)
+            self.radioSessions = try c.decodeIfPresent([RadioSession].self, forKey: .radioSessions) ?? []
             self.deletedTrackIds = try c.decodeIfPresent(Set<String>.self, forKey: .deletedTrackIds) ?? []
             self.deletedPostUUIDs = try c.decodeIfPresent(Set<UUID>.self, forKey: .deletedPostUUIDs) ?? []
             self.deletedRemotePostIds = try c.decodeIfPresent(Set<Int>.self, forKey: .deletedRemotePostIds) ?? []
             self.localEdits = try c.decodeIfPresent([String: LocalEdit].self, forKey: .localEdits) ?? [:]
+            self.followedAccounts = try c.decodeIfPresent(Set<FollowIdentity>.self, forKey: .followedAccounts) ?? []
         }
     }
 
@@ -1966,6 +2560,7 @@ final class TrackLibrary: ObservableObject {
             WWAVKeychain.setJSON(durableBits.deletedTrackIds, for: WWAVKeychainKeys.tombstones)
             WWAVKeychain.setJSON(durableBits.deletedRemotePostIds, for: WWAVKeychainKeys.postTombstones)
             WWAVKeychain.setJSON(durableBits.localEdits, for: WWAVKeychainKeys.localEdits)
+            WWAVKeychain.setJSON(durableBits.followedAccounts, for: WWAVKeychainKeys.followedAccounts)
         }
 
         private func loadState(from url: URL) -> State {
@@ -1989,6 +2584,7 @@ final class TrackLibrary: ObservableObject {
         var deletedTrackIds: Set<String>
         var deletedRemotePostIds: Set<Int>
         var localEdits: [String: LocalEdit]
+        var followedAccounts: Set<FollowIdentity>
     }
 
     private static func legacyLoadState(from url: URL) -> State {
@@ -2020,16 +2616,19 @@ final class TrackLibrary: ObservableObject {
     private func persist() {
         let state = State(
             profile: profile, myTracks: myTracks, feed: feed,
+            radioSessions: radioSessions,
             deletedTrackIds: deletedTrackIds, deletedPostUUIDs: deletedPostUUIDs,
             deletedRemotePostIds: deletedRemotePostIds,
-            localEdits: localEdits
+            localEdits: localEdits,
+            followedAccounts: followedAccounts
         )
         persistence.save(
             state,
             durableBits: DurableLibraryBits(
                 deletedTrackIds: deletedTrackIds,
                 deletedRemotePostIds: deletedRemotePostIds,
-                localEdits: localEdits
+                localEdits: localEdits,
+                followedAccounts: followedAccounts
             )
         )
     }

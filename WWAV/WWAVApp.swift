@@ -39,6 +39,8 @@ struct WWAVApp: App {
                 .environmentObject(nav)
                 .environmentObject(themeManager)
                 .environment(\.theme, themeManager.palette)
+                .environment(\.wwavTypeface, themeManager.typeface)
+                .id(themeManager.typeface.id)
                 .preferredColorScheme(.light)
                 .tint(themeManager.palette.ink)
         }

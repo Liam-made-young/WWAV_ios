@@ -31,6 +31,8 @@ final class AppNavigation: ObservableObject {
     @Published var activePost: Track?
     /// Whether an image post is currently expanded into a fullscreen viewer.
     @Published var imageViewerPost: Track?
+    /// Album currently expanded into its track-list view.
+    @Published var albumViewerPost: Track?
     /// Upload kind requested by another surface, such as the feed composer.
     /// `UploadView` consumes and clears this when it becomes visible.
     @Published var requestedUploadKind: PostKind?
@@ -62,6 +64,7 @@ final class AppNavigation: ObservableObject {
     func closeActivePost() {
         activePost = nil
         imageViewerPost = nil
+        albumViewerPost = nil
         active = .home
     }
 
@@ -74,7 +77,8 @@ final class AppNavigation: ObservableObject {
 
     /// Routes any post to its correct destination. Music → stem player.
     /// Video → play tab with the video player. Image → fullscreen carousel
-    /// modal. Text → no-op (the feed item is already the full post).
+    /// modal. Album → track-list view. Text → no-op (the feed item is
+    /// already the full post).
     func openPost(_ track: Track,
                   in library: TrackLibrary,
                   with player: StemPlayerEngine) {
@@ -116,6 +120,9 @@ final class AppNavigation: ObservableObject {
             library.incrementPlays(of: track.id)
         case .image:
             imageViewerPost = track
+            library.incrementPlays(of: track.id)
+        case .album:
+            albumViewerPost = track
             library.incrementPlays(of: track.id)
         case .text:
             // Text posts live entirely in the feed; tapping is a no-op.

@@ -1,6 +1,6 @@
 import Foundation
 
-enum StemKind: String, CaseIterable, Codable, Identifiable {
+enum StemKind: String, CaseIterable, Codable, Identifiable, Hashable {
     case vox, bass, drum, synth
     var id: String { rawValue }
     /// Demucs canonical filenames are vocals/bass/drums/other.
@@ -97,6 +97,7 @@ enum RemoteProcessingState: Equatable {
 /// (title, bio, social counters) but skip stem separation.
 enum PostKind: String, Codable, CaseIterable, Identifiable {
     case music
+    case album
     case image
     case text
     case video
@@ -105,6 +106,7 @@ enum PostKind: String, Codable, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .music: return "music"
+        case .album: return "album"
         case .image: return "image"
         case .text:  return "text"
         case .video: return "video"
@@ -162,12 +164,17 @@ struct Track: Identifiable, Codable, Equatable {
     /// Optional text body for `.text` posts (also reusable as a long caption
     /// for image / video posts when present alongside `bio`).
     var textBody: String?
+    /// Ordered list of song upload IDs grouped into an `.album` post.
+    /// These IDs point at other local `Track` rows, which lets albums work
+    /// like editable playlists without duplicating audio assets.
+    var albumTrackIds: [UUID]?
     var status: TrackStatus
     var durationSeconds: Double
     var createdAt: Date = .init()
     var plays: Int = 0
     var loves: Int = 0
     var reposts: Int = 0
+    var comments: Int = 0
     /// Whether the signed-in user has liked this track. Mirrored from
     /// `/api/social/is-liked` and toggled via `/api/social/like`.
     var liked: Bool = false
@@ -192,7 +199,7 @@ struct Track: Identifiable, Codable, Equatable {
     /// first carousel image for image posts, nil for text.
     var thumbnailURL: URL? {
         switch kind {
-        case .music, .video: return coverImageURL
+        case .music, .album, .video: return coverImageURL
         case .image:         return resolvedImageURLs.first ?? coverImageURL
         case .text:          return nil
         }
@@ -237,9 +244,9 @@ struct Track: Identifiable, Codable, Equatable {
         case id, kind, title, artist, handle, authorUserId, authorProfilePicture, bio
         case sourceURL, sourceObjectKey, remoteTrackId, userUploadId, publishedTrackId
         case coverArtUrl, stems, stemObjectKeys
-        case imageUrls, videoURL, videoDuration, remotePostId, textBody
+        case imageUrls, videoURL, videoDuration, remotePostId, textBody, albumTrackIds
         case status, durationSeconds, createdAt
-        case plays, loves, reposts, liked, reposted
+        case plays, loves, reposts, comments, liked, reposted
     }
 
     init(
@@ -264,12 +271,14 @@ struct Track: Identifiable, Codable, Equatable {
         videoDuration: Double? = nil,
         remotePostId: Int? = nil,
         textBody: String? = nil,
+        albumTrackIds: [UUID]? = nil,
         status: TrackStatus,
         durationSeconds: Double,
         createdAt: Date = .init(),
         plays: Int = 0,
         loves: Int = 0,
         reposts: Int = 0,
+        comments: Int = 0,
         liked: Bool = false,
         reposted: Bool = false
     ) {
@@ -294,12 +303,14 @@ struct Track: Identifiable, Codable, Equatable {
         self.videoDuration = videoDuration
         self.remotePostId = remotePostId
         self.textBody = textBody
+        self.albumTrackIds = albumTrackIds
         self.status = status
         self.durationSeconds = durationSeconds
         self.createdAt = createdAt
         self.plays = plays
         self.loves = loves
         self.reposts = reposts
+        self.comments = comments
         self.liked = liked
         self.reposted = reposted
     }
@@ -327,12 +338,14 @@ struct Track: Identifiable, Codable, Equatable {
         self.videoDuration   = try c.decodeIfPresent(Double.self, forKey: .videoDuration)
         self.remotePostId    = try c.decodeIfPresent(Int.self, forKey: .remotePostId)
         self.textBody        = try c.decodeIfPresent(String.self, forKey: .textBody)
+        self.albumTrackIds   = try c.decodeIfPresent([UUID].self, forKey: .albumTrackIds)
         self.status          = try c.decode(TrackStatus.self, forKey: .status)
         self.durationSeconds = try c.decode(Double.self, forKey: .durationSeconds)
         self.createdAt       = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         self.plays           = try c.decodeIfPresent(Int.self, forKey: .plays) ?? 0
         self.loves           = try c.decodeIfPresent(Int.self, forKey: .loves) ?? 0
         self.reposts         = try c.decodeIfPresent(Int.self, forKey: .reposts) ?? 0
+        self.comments        = try c.decodeIfPresent(Int.self, forKey: .comments) ?? 0
         self.liked           = try c.decodeIfPresent(Bool.self, forKey: .liked) ?? false
         self.reposted        = try c.decodeIfPresent(Bool.self, forKey: .reposted) ?? false
     }

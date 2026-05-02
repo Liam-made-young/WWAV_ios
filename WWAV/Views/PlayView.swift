@@ -4,7 +4,26 @@ struct PlayView: View {
     @EnvironmentObject var player: StemPlayerEngine
     @EnvironmentObject var library: TrackLibrary
     @EnvironmentObject var nav: AppNavigation
+    @EnvironmentObject var auth: AuthManager
     @Environment(\.theme) private var theme
+    @State private var showingComments = false
+
+    private var currentMusicTrack: Track? {
+        guard let current = player.currentTrack else { return nil }
+        return library.feed.first(where: { $0.id == current.id })
+            ?? library.myTracks.first(where: { $0.id == current.id })
+            ?? current
+    }
+
+    private var playbackQueue: [Track] {
+        var seen: Set<UUID> = []
+        return (library.feed + library.myTracks).filter { track in
+            guard track.kind == .music else { return false }
+            guard seen.insert(track.id).inserted else { return false }
+            if case .ready = track.status { return true }
+            return false
+        }
+    }
 
     var body: some View {
         Group {
@@ -35,11 +54,15 @@ struct PlayView: View {
             VStack(spacing: 12) {
                 header.padding(.horizontal, 28)
                 titleBlock.padding(.horizontal, 28)
+                if let track = currentMusicTrack {
+                    musicSocialPanel(track)
+                        .padding(.horizontal, 28)
+                }
                 Spacer(minLength: 8)
                 stemStage
                 Spacer(minLength: 8)
                 if player.currentTrack != nil {
-                    timeLabels.padding(.horizontal, 28)
+                    transportControls.padding(.horizontal, 28)
                 } else {
                     Text("tap a music track to load four stems into the player.")
                         .font(.wwav(13, weight: .light, italic: true))
@@ -100,11 +123,34 @@ struct PlayView: View {
         .foregroundStyle(theme.muted)
     }
 
+    private var transportControls: some View {
+        HStack(spacing: 18) {
+            skipButton(icon: "backward.end.fill", direction: -1)
+            timeLabels
+            skipButton(icon: "forward.end.fill", direction: 1)
+        }
+    }
+
+    private func skipButton(icon: String, direction: Int) -> some View {
+        Button {
+            skipTrack(by: direction)
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(playbackQueue.count > 1 ? theme.ink : theme.muted.opacity(0.45))
+                .frame(width: 38, height: 38)
+                .background(Circle().fill(theme.sand.opacity(0.70)))
+                .overlay(Circle().stroke(theme.muted.opacity(0.20), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(playbackQueue.count < 2)
+    }
+
     private var header: some View {
         HStack {
             Text("now playing").wwavLabel()
             Spacer()
-            if let track = player.currentTrack {
+            if let track = currentMusicTrack {
                 Text(positionLabel(for: track))
                     .font(.wwav(11, weight: .light))
                     .tracking(2)
@@ -116,12 +162,12 @@ struct PlayView: View {
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(player.currentTrack?.title ?? "no track loaded")
+                Text(currentMusicTrack?.title ?? "no track loaded")
                     .wwavTitle(size: 46)
                     .lineLimit(1)
                 Spacer()
             }
-            if let track = player.currentTrack {
+            if let track = currentMusicTrack {
                 Text("\(track.artist.lowercased()) — \(track.bio.isEmpty ? "stems ready" : "stems")")
                     .wwavLabel(size: 13, tracking: 1.5)
                     .foregroundStyle(theme.muted)
@@ -130,9 +176,121 @@ struct PlayView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private func musicSocialPanel(_ track: Track) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Button {
+                    nav.openProfile(for: track)
+                } label: {
+                    HStack(spacing: 8) {
+                        ProfileAvatar(url: track.authorProfilePictureURL, size: 30)
+                        Text("@\(track.handle)")
+                            .font(.wwav(11, weight: .light))
+                            .tracking(1)
+                            .foregroundStyle(theme.muted)
+                            .lineLimit(1)
+                    }
+                }
+                .buttonStyle(.plain)
+
+                if library.canFollow(track) {
+                    Button {
+                        Task { await library.toggleFollow(track: track, token: auth.token) }
+                    } label: {
+                        let following = library.isFollowing(track)
+                        HStack(spacing: 5) {
+                            Image(systemName: following ? "checkmark" : "plus")
+                                .font(.system(size: 10, weight: .bold))
+                            Text(following ? "following" : "follow")
+                                .font(.wwav(10, weight: .medium, italic: true))
+                                .tracking(1.2)
+                        }
+                        .foregroundStyle(following ? theme.ink : theme.glow)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(following ? theme.muted.opacity(0.12) : theme.accent))
+                        .overlay(Capsule().stroke(theme.muted.opacity(following ? 0.18 : 0), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 12) {
+                musicAction(
+                    icon: track.liked ? "heart.fill" : "heart",
+                    label: short(track.loves),
+                    active: track.liked,
+                    activeColor: Color.red.opacity(0.85)
+                ) {
+                    Task { await library.toggleLike(track: track, token: auth.token) }
+                }
+
+                musicAction(
+                    icon: showingComments ? "bubble.left.fill" : "bubble.left",
+                    label: track.comments > 0 ? short(track.comments) : "reply",
+                    active: showingComments,
+                    activeColor: theme.accent
+                ) {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        showingComments.toggle()
+                    }
+                }
+
+                musicAction(
+                    icon: "arrow.2.squarepath",
+                    label: short(track.reposts),
+                    active: track.reposted,
+                    activeColor: theme.accent
+                ) {
+                    library.toggleRepost(track: track)
+                }
+
+                Text("\(short(track.plays)) plays")
+                    .font(.wwav(10, weight: .light))
+                    .tracking(1.2)
+                    .foregroundStyle(theme.muted)
+
+                Spacer(minLength: 0)
+            }
+
+            if showingComments {
+                CommentsThread(track: track)
+                    .frame(maxHeight: 220)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    private func musicAction(
+        icon: String,
+        label: String,
+        active: Bool,
+        activeColor: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: active ? .semibold : .regular))
+                Text(label)
+                    .font(.wwav(10, weight: .light))
+                    .tracking(1)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            .foregroundStyle(active ? activeColor : theme.muted)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     private func positionLabel(for track: Track) -> String {
         let musicTracks = library.myTracks.filter { $0.kind == .music }
-        guard let idx = musicTracks.firstIndex(of: track) else { return "" }
+        guard let idx = musicTracks.firstIndex(where: { $0.id == track.id }) else { return "" }
         let total = musicTracks.count
         return String(format: "%02d / %02d", idx + 1, total)
     }
@@ -140,6 +298,20 @@ struct PlayView: View {
     private func formatTime(_ s: Double) -> String {
         let total = max(0, Int(s))
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    private func skipTrack(by direction: Int) {
+        guard let current = currentMusicTrack else { return }
+        let queue = playbackQueue
+        guard queue.count > 1,
+              let index = queue.firstIndex(where: { $0.id == current.id }) else { return }
+        let nextIndex = (index + direction + queue.count) % queue.count
+        nav.openPost(queue[nextIndex], in: library, with: player)
+    }
+
+    private func short(_ n: Int) -> String {
+        if n >= 1000 { return String(format: "%.1fK", Double(n) / 1000) }
+        return "\(n)"
     }
 
     private func autoLoadIfNeeded() {

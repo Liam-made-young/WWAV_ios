@@ -28,6 +28,8 @@ targets:
     resources:
       - path: WWAV/Resources/Assets.xcassets
         optional: true
+      - path: WWAV/Resources/Fonts
+        optional: true
     info:
       path: WWAV/Resources/Info.plist
       properties:
@@ -43,6 +45,9 @@ targets:
         # locked, and surfaces lock-screen / Control Center transport controls.
         UIBackgroundModes:
           - audio
+        UIAppFonts:
+          - Fonts/Nunito.ttf
+          - Fonts/Nunito-Italic.ttf
         UIRequiredDeviceCapabilities:
           - arm64
         CFBundleShortVersionString: "0.1.0"

@@ -364,6 +364,11 @@ struct WWAVRemoteUpload: Decodable {
     let coverArtUrl: String?
     let createdAtRaw: String?
     let plays: Int?
+    let loves: Int?
+    let reposts: Int?
+    let comments: Int?
+    let liked: Bool?
+    let reposted: Bool?
     let author: WWAVRemoteAuthor?
 
     var parsedCreatedAt: Date? {
@@ -379,7 +384,12 @@ struct WWAVRemoteUpload: Decodable {
         case created_at
         case plays, playCount, play_count
         case views, viewCount, view_count
-        case likeCount, like_count
+        case likes, likeCount, like_count, loveCount, love_count, heartCount, heart_count
+        case reposts, repostCount, repost_count
+        case remixes, remixCount, remix_count
+        case comments, commentCount, comment_count, replyCount, reply_count
+        case liked, isLiked, likedByMe, liked_by_me, hasLiked, has_liked
+        case reposted, isReposted, repostedByMe, reposted_by_me, hasReposted, has_reposted
         case userUploadId, user_upload_id
         case publishedTrackId, published_track_id
         case itemType
@@ -417,8 +427,21 @@ struct WWAVRemoteUpload: Decodable {
         plays = Self.decodeMetric(from: c, keys: [
             .plays, .playCount, .play_count,
             .views, .viewCount, .view_count,
-            .likeCount, .like_count,
         ])
+        loves = Self.decodeMetric(from: c, keys: [
+            .likes, .likeCount, .like_count,
+            .loveCount, .love_count, .heartCount, .heart_count,
+        ])
+        reposts = Self.decodeMetric(from: c, keys: [
+            .reposts, .repostCount, .repost_count,
+            .remixes, .remixCount, .remix_count,
+        ])
+        comments = Self.decodeMetric(from: c, keys: [
+            .comments, .commentCount, .comment_count,
+            .replyCount, .reply_count,
+        ])
+        liked = Self.decodeFlag(from: c, keys: [.liked, .isLiked, .likedByMe, .liked_by_me, .hasLiked, .has_liked])
+        reposted = Self.decodeFlag(from: c, keys: [.reposted, .isReposted, .repostedByMe, .reposted_by_me, .hasReposted, .has_reposted])
         author = Self.decodeAuthor(from: c)
     }
 
@@ -436,6 +459,28 @@ struct WWAVRemoteUpload: Decodable {
             if let raw = try? container.decode(String.self, forKey: key),
                let value = Int(raw) {
                 return max(0, value)
+            }
+        }
+        return nil
+    }
+
+    private static func decodeFlag(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        keys: [CodingKeys]
+    ) -> Bool? {
+        for key in keys {
+            if let value = try? container.decode(Bool.self, forKey: key) {
+                return value
+            }
+            if let value = try? container.decode(Int.self, forKey: key) {
+                return value != 0
+            }
+            if let raw = try? container.decode(String.self, forKey: key) {
+                switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+                case "true", "yes", "1": return true
+                case "false", "no", "0": return false
+                default: continue
+                }
             }
         }
         return nil
@@ -483,8 +528,14 @@ struct WWAVRemotePost: Decodable {
     let images: [String]?
     let videoUrl: String?
     let coverImageUrl: String?
+    let trackIds: [String]?
     let createdAtRaw: String?
     let plays: Int?
+    let loves: Int?
+    let reposts: Int?
+    let comments: Int?
+    let liked: Bool?
+    let reposted: Bool?
     let author: WWAVRemoteAuthor?
 
     var parsedCreatedAt: Date? {
@@ -493,9 +544,16 @@ struct WWAVRemotePost: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case id, kind, title, content, images, videoUrl, coverImageUrl
+        case trackIds, track_ids, tracks, items
         case created_at, createdAt
         case plays, playCount, play_count
         case views, viewCount, view_count
+        case likes, likeCount, like_count, loveCount, love_count, heartCount, heart_count
+        case reposts, repostCount, repost_count
+        case remixes, remixCount, remix_count
+        case comments, commentCount, comment_count, replyCount, reply_count
+        case liked, isLiked, likedByMe, liked_by_me, hasLiked, has_liked
+        case reposted, isReposted, repostedByMe, reposted_by_me, hasReposted, has_reposted
         case User, user, owner, author, creator, uploader
         case userId, user_id, ownerId, owner_id, creatorId, creator_id, uploaderId, uploader_id
         case username, handle, name, displayName, display_name, email
@@ -511,13 +569,45 @@ struct WWAVRemotePost: Decodable {
         images = try c.decodeIfPresent([String].self, forKey: .images)
         videoUrl = try c.decodeIfPresent(String.self, forKey: .videoUrl)
         coverImageUrl = try c.decodeIfPresent(String.self, forKey: .coverImageUrl)
+        trackIds = Self.decodeStringArray(from: c, keys: [.trackIds, .track_ids, .tracks, .items])
         createdAtRaw = (try? c.decode(String.self, forKey: .created_at))
             ?? (try? c.decode(String.self, forKey: .createdAt))
         plays = Self.decodeMetric(from: c, keys: [
             .plays, .playCount, .play_count,
             .views, .viewCount, .view_count,
         ])
+        loves = Self.decodeMetric(from: c, keys: [
+            .likes, .likeCount, .like_count,
+            .loveCount, .love_count, .heartCount, .heart_count,
+        ])
+        reposts = Self.decodeMetric(from: c, keys: [
+            .reposts, .repostCount, .repost_count,
+            .remixes, .remixCount, .remix_count,
+        ])
+        comments = Self.decodeMetric(from: c, keys: [
+            .comments, .commentCount, .comment_count,
+            .replyCount, .reply_count,
+        ])
+        liked = Self.decodeFlag(from: c, keys: [.liked, .isLiked, .likedByMe, .liked_by_me, .hasLiked, .has_liked])
+        reposted = Self.decodeFlag(from: c, keys: [.reposted, .isReposted, .repostedByMe, .reposted_by_me, .hasReposted, .has_reposted])
         author = Self.decodeAuthor(from: c)
+    }
+
+    private static func decodeStringArray(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        keys: [CodingKeys]
+    ) -> [String]? {
+        for key in keys {
+            if let values = try? container.decode([String].self, forKey: key) {
+                let cleaned = values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                if !cleaned.isEmpty { return cleaned }
+            }
+            if let values = try? container.decode([Int].self, forKey: key), !values.isEmpty {
+                return values.map(String.init)
+            }
+        }
+        return nil
     }
 
     private static func decodeMetric(
@@ -534,6 +624,28 @@ struct WWAVRemotePost: Decodable {
             if let raw = try? container.decode(String.self, forKey: key),
                let value = Int(raw) {
                 return max(0, value)
+            }
+        }
+        return nil
+    }
+
+    private static func decodeFlag(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        keys: [CodingKeys]
+    ) -> Bool? {
+        for key in keys {
+            if let value = try? container.decode(Bool.self, forKey: key) {
+                return value
+            }
+            if let value = try? container.decode(Int.self, forKey: key) {
+                return value != 0
+            }
+            if let raw = try? container.decode(String.self, forKey: key) {
+                switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+                case "true", "yes", "1": return true
+                case "false", "no", "0": return false
+                default: continue
+                }
             }
         }
         return nil

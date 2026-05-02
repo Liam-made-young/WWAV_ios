@@ -281,17 +281,24 @@ struct VideoPostPlayer: View {
     private var sideActionRail: some View {
         VStack(spacing: 16) {
             Button {
-                nav.openProfile(for: currentPost)
+                if library.canFollow(currentPost) {
+                    Task { await library.toggleFollow(track: currentPost, token: auth.token) }
+                } else {
+                    nav.openProfile(for: currentPost)
+                }
             } label: {
                 ProfileAvatar(url: currentPost.authorProfilePictureURL, size: 46)
                     .overlay(alignment: .bottomTrailing) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 18, height: 18)
-                            .background(Circle().fill(theme.accent))
-                            .overlay(Circle().stroke(.black.opacity(0.45), lineWidth: 1))
-                            .offset(x: 1, y: 2)
+                        if library.canFollow(currentPost) {
+                            let following = library.isFollowing(currentPost)
+                            Image(systemName: following ? "checkmark" : "plus")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 18, height: 18)
+                                .background(Circle().fill(following ? theme.muted : theme.accent))
+                                .overlay(Circle().stroke(.black.opacity(0.45), lineWidth: 1))
+                                .offset(x: 1, y: 2)
+                        }
                     }
             }
             .buttonStyle(.plain)

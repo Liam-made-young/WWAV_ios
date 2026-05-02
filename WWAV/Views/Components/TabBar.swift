@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum AppTab: String, CaseIterable, Identifiable {
-    case home, search, play, plus, profile
+    case home, radio, play, plus, profile
     var id: String { rawValue }
 }
 
@@ -58,8 +58,8 @@ private struct TabIcon: View {
             switch tab {
             case .home:
                 HomeIcon(stroke: color)
-            case .search:
-                SearchIcon(stroke: color)
+            case .radio:
+                RadioIcon(stroke: color)
             case .play:
                 PlayIcon(stroke: color, fill: color)
             case .plus:
@@ -95,21 +95,38 @@ private struct HomeIcon: View {
     }
 }
 
-private struct SearchIcon: View {
+private struct RadioIcon: View {
     let stroke: Color
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
             ZStack {
-                Circle()
+                RoundedRectangle(cornerRadius: w * 0.16, style: .continuous)
                     .stroke(stroke, lineWidth: 1.4)
-                    .frame(width: w * 0.55, height: w * 0.55)
-                    .position(x: w * 0.44, y: w * 0.44)
+                    .frame(width: w * 0.64, height: w * 0.44)
+                    .position(x: w * 0.5, y: w * 0.57)
                 Path { p in
-                    p.move(to: CGPoint(x: w * 0.65, y: w * 0.65))
-                    p.addLine(to: CGPoint(x: w * 0.85, y: w * 0.85))
+                    p.move(to: CGPoint(x: w * 0.36, y: w * 0.35))
+                    p.addLine(to: CGPoint(x: w * 0.66, y: w * 0.12))
                 }
                 .stroke(stroke, style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+                Circle()
+                    .fill(stroke)
+                    .frame(width: w * 0.12, height: w * 0.12)
+                    .position(x: w * 0.38, y: w * 0.58)
+                Path { p in
+                    p.move(to: CGPoint(x: w * 0.52, y: w * 0.50))
+                    p.addQuadCurve(
+                        to: CGPoint(x: w * 0.52, y: w * 0.66),
+                        control: CGPoint(x: w * 0.64, y: w * 0.58)
+                    )
+                    p.move(to: CGPoint(x: w * 0.60, y: w * 0.45))
+                    p.addQuadCurve(
+                        to: CGPoint(x: w * 0.60, y: w * 0.71),
+                        control: CGPoint(x: w * 0.78, y: w * 0.58)
+                    )
+                }
+                .stroke(stroke, style: StrokeStyle(lineWidth: 1.2, lineCap: .round))
             }
         }
     }

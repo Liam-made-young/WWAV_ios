@@ -2,79 +2,6 @@ import SwiftUI
 
 private let feedTabLabels = ["for you", "following", "friends"]
 
-private struct WWAVLogoMark: View {
-    var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width
-            let h = geo.size.height
-
-            ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(.black)
-
-                Circle()
-                    .fill(.white)
-                    .frame(width: w * 0.92, height: w * 0.92)
-                    .offset(y: -h * 0.08)
-
-                Circle()
-                    .fill(.black)
-                    .frame(width: w * 0.43, height: w * 0.43)
-                    .offset(x: w * 0.04, y: h * 0.08)
-
-                Circle()
-                    .fill(.white)
-                    .frame(width: w * 0.24, height: w * 0.24)
-                    .offset(x: -w * 0.02, y: h * 0.22)
-
-                Circle()
-                    .fill(.black)
-                    .frame(width: w * 0.25, height: w * 0.25)
-                    .offset(x: w * 0.32, y: h * 0.18)
-
-                Circle()
-                    .fill(.white)
-                    .frame(width: w * 0.17, height: w * 0.17)
-                    .offset(x: w * 0.32, y: h * 0.24)
-
-                Capsule()
-                    .fill(.black)
-                    .frame(width: w * 0.98, height: h * 0.045)
-                    .offset(y: h * 0.24)
-
-                Capsule()
-                    .fill(.black)
-                    .frame(width: w * 0.44, height: h * 0.052)
-                    .offset(x: -w * 0.26, y: h * 0.34)
-
-                Capsule()
-                    .fill(.black)
-                    .frame(width: w * 0.34, height: h * 0.052)
-                    .offset(x: w * 0.30, y: h * 0.34)
-
-                Capsule()
-                    .fill(.black)
-                    .frame(width: w * 0.78, height: h * 0.052)
-                    .offset(x: w * 0.06, y: h * 0.45)
-
-                Circle()
-                    .fill(.black)
-                    .frame(width: w * 0.40, height: w * 0.40)
-                    .offset(x: -w * 0.22, y: h * 0.53)
-
-                Capsule()
-                    .fill(.white)
-                    .frame(width: w * 0.44, height: h * 0.12)
-                    .rotationEffect(.degrees(-10))
-                    .offset(x: w * 0.18, y: h * 0.49)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-        .aspectRatio(1, contentMode: .fit)
-        .accessibilityLabel("WWAV")
-    }
-}
-
 struct HomeView: View {
     @EnvironmentObject var library: TrackLibrary
     @EnvironmentObject var player: StemPlayerEngine
@@ -82,6 +9,12 @@ struct HomeView: View {
     @EnvironmentObject var auth: AuthManager
     @Environment(\.theme) private var theme
     @State private var feedTab: Int = 0
+    @State private var showingSearch: Bool = false
+    @State private var showingRadioLive: Bool = false
+
+    private var currentFeed: [Track] {
+        library.feed(for: feedTab)
+    }
 
     var body: some View {
         ZStack {
@@ -97,18 +30,18 @@ struct HomeView: View {
                             .padding(.bottom, 4)
                         SoftRule()
 
-                        if library.feed.isEmpty {
+                        if currentFeed.isEmpty {
                             EmptyState(
-                                title: "no waves yet",
-                                body: "pull down to refresh, or post from here."
+                                title: emptyTitle,
+                                body: emptyBody
                             )
                             .frame(minHeight: 320)
                         } else {
-                            ForEach(Array(library.feed.enumerated()), id: \.element.id) { idx, track in
+                            ForEach(Array(currentFeed.enumerated()), id: \.element.id) { idx, track in
                                 FeedItemView(track: track, accent: idx == 0) {
                                     nav.openPost(track, in: library, with: player)
                                 }
-                                if idx < library.feed.count - 1 {
+                                if idx < currentFeed.count - 1 {
                                     SoftRule()
                                 }
                             }
@@ -125,18 +58,71 @@ struct HomeView: View {
         .fullScreenCover(item: $nav.imageViewerPost) { post in
             FullscreenImageViewer(post: post)
         }
+        .sheet(isPresented: $showingSearch) {
+            SearchView()
+        }
+        .sheet(isPresented: $showingRadioLive) {
+            RadioLiveFeedSheet()
+        }
+    }
+
+    private var emptyTitle: String {
+        switch feedTab {
+        case 1: return "no follows yet"
+        case 2: return "no friends yet"
+        default: return "no waves yet"
+        }
+    }
+
+    private var emptyBody: String {
+        switch feedTab {
+        case 1: return "follow artists from profiles or the feed to build this tab."
+        case 2: return "liked, remixed, followed, and your own posts collect here."
+        default: return "pull down to refresh, or post from here."
+        }
     }
 
     private var header: some View {
         HStack {
-            WWAVLogoMark()
+            Image("WWAVLogo")
+                .resizable()
+                .scaledToFit()
                 .frame(width: 54, height: 54)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .shadow(color: .black.opacity(0.16), radius: 6, y: 3)
+                .accessibilityLabel("WWAV")
             Spacer()
+            Button {
+                showingSearch = true
+            } label: {
+                headerButton(icon: "magnifyingglass", label: "search")
+            }
+            .buttonStyle(.plain)
+            Button {
+                showingRadioLive = true
+            } label: {
+                headerButton(icon: "dot.radiowaves.left.and.right", label: "live")
+            }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 24)
         .padding(.top, 12)
         .padding(.bottom, 14)
+    }
+
+    private func headerButton(icon: String, label: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+            Text(label)
+                .font(.wwav(10, weight: .medium, italic: true))
+                .tracking(1.3)
+        }
+        .foregroundStyle(theme.ink)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
+        .background(Capsule().fill(theme.sand.opacity(0.66)))
+        .overlay(Capsule().stroke(theme.muted.opacity(0.20), lineWidth: 1))
     }
 
     private var tabPicker: some View {
@@ -241,7 +227,7 @@ private struct FeedComposerCard: View {
                     Text("\(selectedKind.label) post")
                         .font(.wwav(16, weight: .medium, italic: true))
                         .foregroundStyle(theme.ink)
-                    Text(selectedKind == .music ? "stem upload" : selectedKind == .image ? "photo set" : "video clip")
+                    Text(kindSubtitle(for: selectedKind))
                         .font(.wwav(12, weight: .light, italic: true))
                         .foregroundStyle(theme.muted)
                 }
@@ -320,9 +306,20 @@ private struct FeedComposerCard: View {
     private func iconName(for kind: PostKind) -> String {
         switch kind {
         case .music: return "music.note"
+        case .album: return "rectangle.stack"
         case .image: return "photo"
         case .text: return "text.bubble"
         case .video: return "play.rectangle"
+        }
+    }
+
+    private func kindSubtitle(for kind: PostKind) -> String {
+        switch kind {
+        case .music: return "stem upload"
+        case .album: return "tracklist post"
+        case .image: return "photo set"
+        case .text: return "quick thought"
+        case .video: return "video clip"
         }
     }
 }
@@ -371,6 +368,11 @@ struct FeedItemView: View {
                     Text(timeAgo(track.createdAt))
                         .font(.wwav(12, weight: .light))
                         .foregroundStyle(theme.muted)
+                    if library.canFollow(track) {
+                        FollowMiniButton(isFollowing: library.isFollowing(track)) {
+                            Task { await library.toggleFollow(track: track, token: auth.token) }
+                        }
+                    }
                     if library.isAuthoredByCurrentUser(track) {
                         Button { editing = true } label: {
                             Image(systemName: "ellipsis")
@@ -405,6 +407,7 @@ struct FeedItemView: View {
     private var bodyContent: some View {
         switch track.kind {
         case .music: musicBody
+        case .album: albumBody
         case .image: imageBody
         case .text:  textBody
         case .video: videoBody
@@ -429,18 +432,7 @@ struct FeedItemView: View {
 
     private var cover: some View {
         ZStack(alignment: .bottomTrailing) {
-            ZStack {
-                LinearGradient(colors: [theme.clay.opacity(0.25), theme.clayDeep.opacity(0.15)],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-                CachedAsyncImage(url: track.coverImageURL) {
-                    Color.clear
-                }
-            }
-            .aspectRatio(1, contentMode: .fit)
-            .frame(maxWidth: .infinity)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .overlay(RoundedRectangle(cornerRadius: 16)
-                        .stroke(theme.muted.opacity(0.20), lineWidth: 1))
+            FeedMediaImage(url: track.coverImageURL, fallbackAspectRatio: 1)
 
             Button(action: onPlay) {
                 ZStack {
@@ -465,6 +457,91 @@ struct FeedItemView: View {
             .wwavTitle(size: 22)
             .lineLimit(2)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: – Album
+
+    private var albumBody: some View {
+        let tracks = library.albumTracks(for: track)
+        return VStack(alignment: .leading, spacing: 0) {
+            ZStack(alignment: .bottomTrailing) {
+                FeedMediaImage(url: track.coverImageURL, fallbackAspectRatio: 1)
+
+                if !tracks.isEmpty {
+                    Button(action: onPlay) {
+                        ZStack {
+                            Circle().fill(
+                                RadialGradient(colors: [theme.clay, theme.clayDeep],
+                                               center: UnitPoint(x: 0.35, y: 0.30),
+                                               startRadius: 2, endRadius: 36)
+                            )
+                            Triangle().fill(theme.glow).frame(width: 12, height: 14)
+                                .offset(x: 1)
+                        }
+                        .frame(width: 50, height: 50)
+                        .shadow(color: .black.opacity(0.30), radius: 6, y: 3)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(12)
+                }
+            }
+            .padding(.top, 12)
+
+            titleRow.padding(.top, 12)
+            if !track.bio.isEmpty {
+                Text(track.bio)
+                    .font(.wwav(13, weight: .light))
+                    .foregroundStyle(theme.ink)
+                    .padding(.top, 6)
+            }
+
+            VStack(spacing: 0) {
+                if tracks.isEmpty {
+                    Text("no songs in this album yet")
+                        .font(.wwav(12, weight: .light, italic: true))
+                        .foregroundStyle(theme.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 12)
+                } else {
+                    ForEach(Array(tracks.prefix(6).enumerated()), id: \.element.id) { index, song in
+                        HStack(spacing: 10) {
+                            Text(String(format: "%02d", index + 1))
+                                .font(.wwav(10, weight: .light))
+                                .foregroundStyle(theme.muted)
+                                .frame(width: 24, alignment: .leading)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(song.title)
+                                    .font(.wwav(13, weight: .medium))
+                                    .foregroundStyle(theme.ink)
+                                    .lineLimit(1)
+                                Text("@\(song.handle)")
+                                    .font(.wwav(10, weight: .light))
+                                    .tracking(1)
+                                    .foregroundStyle(theme.muted)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, 8)
+                        if index < min(tracks.count, 6) - 1 {
+                            Rectangle()
+                                .fill(theme.muted.opacity(0.14))
+                                .frame(height: 1)
+                        }
+                    }
+                    if tracks.count > 6 {
+                        Text("+ \(tracks.count - 6) more")
+                            .font(.wwav(11, weight: .light, italic: true))
+                            .foregroundStyle(theme.muted)
+                            .padding(.top, 8)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 12).fill(theme.sand.opacity(0.58)))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.muted.opacity(0.16), lineWidth: 1))
+            .padding(.top, 10)
+        }
     }
 
     // MARK: – Image
@@ -517,18 +594,7 @@ struct FeedItemView: View {
     private var videoBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .center) {
-                ZStack {
-                    LinearGradient(colors: [theme.clay.opacity(0.25), theme.clayDeep.opacity(0.15)],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing)
-                    CachedAsyncImage(url: track.coverImageURL) {
-                        Color.clear
-                    }
-                }
-                .aspectRatio(9.0/16.0, contentMode: .fit)
-                .frame(maxWidth: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-                .overlay(RoundedRectangle(cornerRadius: 16)
-                            .stroke(theme.muted.opacity(0.20), lineWidth: 1))
+                FeedMediaImage(url: track.coverImageURL, fallbackAspectRatio: 16.0 / 9.0)
 
                 Button(action: onPlay) {
                     ZStack {
@@ -658,12 +724,85 @@ private struct PostKindBadge: View {
     }
 }
 
+private struct FollowMiniButton: View {
+    let isFollowing: Bool
+    let action: () -> Void
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: isFollowing ? "checkmark" : "plus")
+                    .font(.system(size: 9, weight: .bold))
+                Text(isFollowing ? "following" : "follow")
+                    .font(.wwav(9, weight: .medium, italic: true))
+                    .tracking(1)
+            }
+            .foregroundStyle(isFollowing ? theme.ink : theme.glow)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(
+                Capsule().fill(isFollowing ? theme.muted.opacity(0.12) : theme.accent)
+            )
+            .overlay(
+                Capsule().stroke(theme.muted.opacity(isFollowing ? 0.18 : 0), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct FeedMediaImage: View {
+    let url: URL?
+    let fallbackAspectRatio: CGFloat
+    var cornerRadius: CGFloat = 16
+
+    @Environment(\.theme) private var theme
+    @State private var loadedAspectRatio: CGFloat?
+
+    private var aspectRatio: CGFloat {
+        Self.clampedFeedAspectRatio(loadedAspectRatio ?? fallbackAspectRatio)
+    }
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [theme.clay.opacity(0.25), theme.clayDeep.opacity(0.15)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+            CachedAsyncImage(url: url, contentMode: .fit, onImageLoad: { image in
+                let ratio = image.size.height > 0 ? image.size.width / image.size.height : fallbackAspectRatio
+                loadedAspectRatio = ratio
+            }) {
+                Color.clear
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(0)
+        }
+        .aspectRatio(aspectRatio, contentMode: .fit)
+        .frame(maxWidth: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .stroke(theme.muted.opacity(0.20), lineWidth: 1)
+        )
+        .clipped()
+        .animation(.easeInOut(duration: 0.18), value: aspectRatio)
+    }
+
+    private static func clampedFeedAspectRatio(_ raw: CGFloat) -> CGFloat {
+        guard raw.isFinite, raw > 0 else { return 1 }
+        return min(max(raw, 4.0 / 5.0), 16.0 / 9.0)
+    }
+}
+
 struct PublicProfileSheet: View {
     let route: PublicProfileRoute
 
     @EnvironmentObject var library: TrackLibrary
     @EnvironmentObject var player: StemPlayerEngine
     @EnvironmentObject var nav: AppNavigation
+    @EnvironmentObject var auth: AuthManager
     @Environment(\.dismiss) private var dismiss
     @Environment(\.theme) private var theme
 
@@ -764,6 +903,32 @@ struct PublicProfileSheet: View {
                 }
 
                 Spacer(minLength: 0)
+
+                if !isCurrentUser {
+                    Button {
+                        Task { await library.toggleFollow(route: route, token: auth.token) }
+                    } label: {
+                        let following = library.isFollowing(
+                            authorUserId: route.authorUserId,
+                            handle: route.handle
+                        )
+                        HStack(spacing: 6) {
+                            Image(systemName: following ? "checkmark" : "plus")
+                                .font(.system(size: 11, weight: .bold))
+                            Text(following ? "following" : "follow")
+                                .font(.wwav(11, weight: .medium, italic: true))
+                                .tracking(1.3)
+                        }
+                        .foregroundStyle(following ? theme.ink : theme.glow)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(
+                            Capsule().fill(following ? theme.muted.opacity(0.12) : theme.accent)
+                        )
+                        .overlay(Capsule().stroke(theme.muted.opacity(following ? 0.20 : 0), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
             }
 
             HStack(spacing: 8) {
@@ -850,7 +1015,7 @@ private struct PublicProfilePostRow: View {
     @ViewBuilder
     private var thumbnail: some View {
         switch track.kind {
-        case .music, .video, .image:
+        case .music, .album, .video, .image:
             ZStack {
                 LinearGradient(
                     colors: [theme.clay.opacity(0.25), theme.clayDeep.opacity(0.15)],
@@ -926,6 +1091,139 @@ struct FullscreenImageViewer: View {
             .padding(.top, 50)
             .padding(.trailing, 18)
         }
+    }
+}
+
+struct RadioLiveFeedSheet: View {
+    @EnvironmentObject var library: TrackLibrary
+    @EnvironmentObject var player: StemPlayerEngine
+    @EnvironmentObject var nav: AppNavigation
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                theme.pageRadial.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("live radio").wwavTitle(size: 36)
+                            .padding(.top, 8)
+
+                        if library.liveRadioSessions.isEmpty {
+                            EmptyState(
+                                title: "nothing live",
+                                body: "audio-only streams from DJs and musicians will appear here."
+                            )
+                            .frame(minHeight: 240)
+                        } else {
+                            VStack(spacing: 10) {
+                                ForEach(library.liveRadioSessions) { session in
+                                    RadioLiveFeedRow(session: session) {
+                                        if let track = library.currentTrack(for: session) {
+                                            nav.openPost(track, in: library, with: player)
+                                            dismiss()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Button {
+                            nav.active = .radio
+                            dismiss()
+                        } label: {
+                            Text("manage radio")
+                                .font(.wwav(13, weight: .medium, italic: true))
+                                .tracking(1.5)
+                                .foregroundStyle(theme.glow)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(Capsule().fill(theme.accent))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 18)
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(theme.ink)
+                            .frame(width: 34, height: 34)
+                            .background(Circle().fill(theme.muted.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+}
+
+private struct RadioLiveFeedRow: View {
+    let session: RadioSession
+    let onListen: () -> Void
+
+    @EnvironmentObject var library: TrackLibrary
+    @Environment(\.theme) private var theme
+
+    private var currentTrack: Track? {
+        library.currentTrack(for: session)
+    }
+
+    var body: some View {
+        Button(action: onListen) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle().fill(theme.accent)
+                    Image(systemName: "dot.radiowaves.left.and.right")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(theme.glow)
+                }
+                .frame(width: 46, height: 46)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(session.title)
+                            .wwavTitle(size: 22)
+                            .lineLimit(1)
+                        Text("live")
+                            .font(.wwav(9, weight: .medium, italic: true))
+                            .tracking(1.3)
+                            .foregroundStyle(theme.glow)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(theme.accent))
+                    }
+                    Text("@\(session.hostHandle) · \(currentTrack?.title ?? "queue warming up")")
+                        .font(.wwav(11, weight: .light))
+                        .tracking(1)
+                        .foregroundStyle(theme.muted)
+                        .lineLimit(1)
+                    if !session.notes.isEmpty {
+                        Text(session.notes)
+                            .font(.wwav(12, weight: .light))
+                            .foregroundStyle(theme.ink.opacity(0.82))
+                            .lineLimit(2)
+                    }
+                }
+
+                Spacer(minLength: 0)
+                Triangle()
+                    .fill(theme.accent)
+                    .frame(width: 10, height: 12)
+                    .offset(x: 1)
+            }
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 12).fill(theme.sand.opacity(0.64)))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.muted.opacity(0.18), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
     }
 }
 
