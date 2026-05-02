@@ -186,6 +186,11 @@ private let audioTypes: [UTType] = {
     return types
 }()
 
+/// Holds finalised multitrack stem URLs until the upload form submits.
+private struct MultitrackDraft: Equatable {
+    let stemURLs: [StemKind: URL]
+}
+
 private struct MusicUploadForm: View {
     @EnvironmentObject var library: TrackLibrary
     @EnvironmentObject var nav: AppNavigation
@@ -193,8 +198,11 @@ private struct MusicUploadForm: View {
     @EnvironmentObject var auth: AuthManager
     @Environment(\.theme) private var theme
 
+    @State private var entryDialogOpen: Bool = false
     @State private var pickerOpen: Bool = false
+    @State private var recorderOpen: Bool = false
     @State private var pickedFile: PickedFile?
+    @State private var multitrackDraft: MultitrackDraft?
     @State private var title: String = ""
     @State private var bio: String = ""
     @State private var inFlightID: UUID?
@@ -202,19 +210,32 @@ private struct MusicUploadForm: View {
     @State private var coverImage: UIImage?
     @State private var coverData: Data?
 
+    private var hasSource: Bool { pickedFile != nil || multitrackDraft != nil }
+
     var body: some View {
         Group {
-            if pickedFile == nil {
+            if !hasSource {
                 BigCircleEntry(
                     title: "drop a track. start a wave.",
-                    subtitle: "wav · mp3 · flac · m4a",
+                    subtitle: "files · single recording · multitrack",
                     kicker: "upload a wav"
                 ) {
-                    pickerOpen = true
+                    entryDialogOpen = true
                 }
             } else {
                 ScrollView { filled.padding(.bottom, 16) }
             }
+        }
+        .confirmationDialog(
+            "add a track",
+            isPresented: $entryDialogOpen,
+            titleVisibility: .visible
+        ) {
+            Button("look in files") { pickerOpen = true }
+            Button("record now")   { recorderOpen = true }
+            Button("cancel", role: .cancel) {}
+        } message: {
+            Text("choose an audio file or record inside WWAV.")
         }
         .fileImporter(
             isPresented: $pickerOpen,
@@ -223,8 +244,23 @@ private struct MusicUploadForm: View {
         ) { result in
             if case .success(let urls) = result, let url = urls.first {
                 pickedFile = PickedFile(url: url)
+                multitrackDraft = nil
                 if title.isEmpty { title = url.deletingPathExtension().lastPathComponent }
             }
+        }
+        .sheet(isPresented: $recorderOpen) {
+            RecordNowSheet(
+                onSingleRecording: { url in
+                    pickedFile = PickedFile(url: url)
+                    multitrackDraft = nil
+                    if title.isEmpty { title = "recorded take" }
+                },
+                onMultitrackRecording: { stems in
+                    multitrackDraft = MultitrackDraft(stemURLs: stems)
+                    pickedFile = nil
+                    if title.isEmpty { title = "multitrack take" }
+                }
+            )
         }
     }
 
@@ -310,6 +346,37 @@ private struct MusicUploadForm: View {
                     }
                     .padding(.horizontal, 16).padding(.vertical, 14)
                     .background(boxBg).overlay(boxStroke)
+                } else if let mt = multitrackDraft {
+                    HStack(spacing: 14) {
+                        ZStack {
+                            Circle().fill(
+                                RadialGradient(
+                                    colors: [theme.clay, theme.clayDeep],
+                                    center: UnitPoint(x: 0.35, y: 0.30),
+                                    startRadius: 1, endRadius: 28)
+                            )
+                            Image(systemName: "waveform")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(theme.glow)
+                        }
+                        .frame(width: 36, height: 36)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("multitrack take")
+                                .font(.wwav(14, weight: .regular)).foregroundStyle(theme.ink)
+                            Text("\(mt.stemURLs.count) stems recorded")
+                                .font(.wwav(11, weight: .light)).foregroundStyle(theme.muted)
+                        }
+                        Spacer()
+                        Button {
+                            multitrackDraft = nil
+                            inFlightID = nil
+                        } label: {
+                            Text("✕").font(.wwav(13, weight: .light)).foregroundStyle(theme.muted)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 14)
+                    .background(boxBg).overlay(boxStroke)
                 }
             }
 
@@ -358,9 +425,21 @@ private struct MusicUploadForm: View {
 
     private var uploadButton: some View {
         Button {
-            guard let f = pickedFile else { return }
+            // Resolve the source URL: prefer a single picked file, otherwise
+            // use the first available stem from the multitrack draft.
+            let sourceURL: URL?
+            if let f = pickedFile {
+                sourceURL = f.url
+            } else if let mt = multitrackDraft {
+                // TODO: when TrackLibrary gains startMultitrackUpload, pass all stems.
+                // For now upload the vox stem (or whichever is first) as a single file.
+                sourceURL = mt.stemURLs[.vox] ?? mt.stemURLs.values.first
+            } else {
+                sourceURL = nil
+            }
+            guard let url = sourceURL else { return }
             let id = library.startUpload(
-                sourceURL: f.url,
+                sourceURL: url,
                 title: title.isEmpty ? "untitled" : title,
                 bio: bio,
                 coverImage: coverData,
@@ -385,6 +464,7 @@ private struct MusicUploadForm: View {
 
     private func cancel() {
         pickedFile = nil
+        multitrackDraft = nil
         title = ""
         bio = ""
         inFlightID = nil
