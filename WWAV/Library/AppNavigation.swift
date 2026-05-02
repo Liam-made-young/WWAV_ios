@@ -36,6 +36,9 @@ final class AppNavigation: ObservableObject {
     @Published var requestedUploadKind: PostKind?
     /// Public author profile shown from feed/search/video surfaces.
     @Published var publicProfile: PublicProfileRoute?
+    /// When non-nil, PlayView renders the live radio listener experience
+    /// for this session instead of the normal stem player.
+    @Published var tunedInSessionId: UUID?
 
     var hidesTabBar: Bool {
         active == .play && activePost?.kind == .video
@@ -63,6 +66,18 @@ final class AppNavigation: ObservableObject {
         activePost = nil
         imageViewerPost = nil
         active = .home
+    }
+
+    /// Switches the play view into live-listener mode for the given session.
+    func tuneIn(session: RadioSession) {
+        tunedInSessionId = session.id
+        activePost = nil         // Clear any video post that may be showing.
+        active = .play
+    }
+
+    /// Leaves the live listener experience and returns to the normal play view.
+    func leaveLive() {
+        tunedInSessionId = nil
     }
 
     /// Loads a music track into the stem engine and switches to the play tab.
