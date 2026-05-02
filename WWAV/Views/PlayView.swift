@@ -5,6 +5,7 @@ struct PlayView: View {
     @EnvironmentObject var library: TrackLibrary
     @EnvironmentObject var nav: AppNavigation
     @EnvironmentObject var auth: AuthManager
+    @EnvironmentObject var listener: LiveRadioListener
     @Environment(\.theme) private var theme
     @State private var showingComments = false
     @State private var showingRemix: Bool = false
@@ -28,7 +29,11 @@ struct PlayView: View {
 
     var body: some View {
         Group {
-            if let post = nav.activePost, post.kind == .video {
+            if nav.tunedInSessionId != nil {
+                // Live-listener mode — show either the talk visualizer or the
+                // locked-down stem player. No pause / seek / skip allowed.
+                liveListenerBody
+            } else if let post = nav.activePost, post.kind == .video {
                 VideoPostPlayer(post: post)
                     .id(post.id)
             } else {
@@ -52,6 +57,130 @@ struct PlayView: View {
                 RemixSheet(track: track)
             }
         }
+    }
+
+    // MARK: – Live listener body
+
+    @ViewBuilder
+    private var liveListenerBody: some View {
+        ZStack {
+            theme.centerRadial.ignoresSafeArea()
+            VStack(spacing: 0) {
+                liveListenerHeader
+                    .padding(.horizontal, 28)
+                    .padding(.top, 8)
+
+                switch listener.mode {
+                case .talk:
+                    LiveTalkVisualizer(
+                        level: listener.talkLevel,
+                        sessionTitle: liveSessionTitle
+                    )
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 24)
+
+                case .song(let track):
+                    liveListenerSongView(track: track)
+                }
+
+                // Volume is fine; pause / seek / skip are not available in
+                // live mode (the experience is unpausable by design).
+                liveListenerVolumeRow
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 24)
+            }
+        }
+    }
+
+    private var liveListenerHeader: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("live radio").wwavLabel()
+                Text(liveSessionTitle)
+                    .wwavTitle(size: 22)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button {
+                listener.tuneOut()
+                nav.leaveLive()
+            } label: {
+                Text("leave")
+                    .font(.wwav(11, weight: .medium, italic: true))
+                    .tracking(1.4)
+                    .foregroundStyle(theme.muted)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(theme.sand.opacity(0.6)))
+                    .overlay(Capsule().stroke(theme.muted.opacity(0.22), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.bottom, 8)
+    }
+
+    @ViewBuilder
+    private func liveListenerSongView(track: Track) -> some View {
+        VStack(spacing: 12) {
+            // Song info header (no controls).
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(track.title)
+                        .wwavTitle(size: 36)
+                        .lineLimit(1)
+                    Spacer()
+                }
+                Text("\(track.artist.lowercased()) — live")
+                    .wwavLabel(size: 12, tracking: 1.4)
+                    .foregroundStyle(theme.muted)
+            }
+            .padding(.horizontal, 28)
+
+            // Re-use the circular waveform but disable seeking.
+            let canvas = UIScreen.main.bounds.width - 40
+            let sphereVisualRadius = canvas * 0.755 / 2
+            ZStack {
+                StemPlayerWidget(engine: player, size: canvas)
+                CircularWaveform(
+                    peaks: player.peaks,
+                    progress: 0,          // Position locked — driven by DJ.
+                    canvasSize: canvas,
+                    innerRadius: sphereVisualRadius,
+                    maxBarHeight: (canvas / 2) - sphereVisualRadius - 2,
+                    onSeek: { _ in }      // Seeking disabled in live mode.
+                )
+            }
+            .frame(width: UIScreen.main.bounds.width - 10,
+                   height: UIScreen.main.bounds.width - 10)
+
+            Text("synced to DJ clock")
+                .font(.wwav(11, weight: .light, italic: true))
+                .tracking(1.2)
+                .foregroundStyle(theme.muted)
+        }
+        .padding(.vertical, 8)
+    }
+
+    private var liveListenerVolumeRow: some View {
+        // A simple mute toggle — real volume slider omitted for brevity.
+        // The listener can still adjust system volume with hardware buttons.
+        HStack {
+            Image(systemName: "speaker.wave.2")
+                .font(.system(size: 14))
+                .foregroundStyle(theme.muted)
+            Text("system volume controls audio")
+                .font(.wwav(11, weight: .light, italic: true))
+                .tracking(1)
+                .foregroundStyle(theme.muted)
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.top, 8)
+    }
+
+    private var liveSessionTitle: String {
+        guard let sid = nav.tunedInSessionId else { return "live" }
+        let session = library.radioSessions.first { $0.id == sid }
+        return session?.title ?? "live"
     }
 
     private var stemBody: some View {
