@@ -2375,6 +2375,7 @@ final class TrackLibrary: ObservableObject {
         switch kind {
         case .music: return "untitled"
         case .album: return "untitled album"
+        case .radio: return "radio session"
         case .image: return "image post"
         case .text: return "text post"
         case .video: return "video"
@@ -2451,7 +2452,7 @@ final class TrackLibrary: ObservableObject {
                 trackIds: (track.albumTrackIds ?? []).map(\.uuidString),
                 token: token
             )
-        case .music:
+        case .music, .radio:
             return nil
         }
     }

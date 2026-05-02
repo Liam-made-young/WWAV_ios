@@ -307,6 +307,7 @@ private struct FeedComposerCard: View {
         switch kind {
         case .music: return "music.note"
         case .album: return "rectangle.stack"
+        case .radio: return "antenna.radiowaves.left.and.right"
         case .image: return "photo"
         case .text: return "text.bubble"
         case .video: return "play.rectangle"
@@ -317,6 +318,7 @@ private struct FeedComposerCard: View {
         switch kind {
         case .music: return "stem upload"
         case .album: return "tracklist post"
+        case .radio: return "live queue"
         case .image: return "photo set"
         case .text: return "quick thought"
         case .video: return "video clip"
@@ -409,6 +411,7 @@ struct FeedItemView: View {
         switch track.kind {
         case .music: musicBody
         case .album: albumBody
+        case .radio: textBody
         case .image: imageBody
         case .text:  textBody
         case .video: videoBody
@@ -1065,13 +1068,13 @@ private struct PublicProfilePostRow: View {
                         .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
                 }
             }
-        case .text:
+        case .text, .radio:
             ZStack {
                 LinearGradient(
                     colors: [theme.sand, theme.sandDeep.opacity(0.64)],
                     startPoint: .topLeading, endPoint: .bottomTrailing
                 )
-                Image(systemName: "text.bubble")
+                Image(systemName: track.kind == .radio ? "antenna.radiowaves.left.and.right" : "text.bubble")
                     .font(.system(size: 18, weight: .regular))
                     .foregroundStyle(theme.muted)
             }
@@ -1166,7 +1169,7 @@ struct RadioLiveFeedSheet: View {
                         }
 
                         Button {
-                            nav.active = .radio
+                            nav.compose(.radio)
                             dismiss()
                         } label: {
                             Text("manage radio")
