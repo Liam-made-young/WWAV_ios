@@ -1,6 +1,23 @@
 import Foundation
 import Combine
 
+struct RadioSession: Identifiable, Codable, Equatable {
+    var id: UUID = .init()
+    var title: String
+    var notes: String
+    var hostName: String
+    var hostHandle: String
+    var queueTrackIds: [UUID]
+    var currentIndex: Int = 0
+    var isLive: Bool = false
+    var startedAt: Date?
+    var createdAt: Date = .init()
+
+    var normalizedHostHandle: String {
+        hostHandle.normalizedHandle
+    }
+}
+
 enum FeedRanking {
     static func rank(_ tracks: [Track], referenceDate: Date = Date()) -> [Track] {
         tracks.sorted { lhs, rhs in
@@ -68,6 +85,7 @@ final class TrackLibrary: ObservableObject {
     @Published private(set) var myTracks: [Track] = []
     @Published private(set) var feed: [Track] = []
     @Published private(set) var profile: UserProfile
+    @Published private(set) var radioSessions: [RadioSession] = []
 
     /// Tombstone set of every server-side trackId the user has deleted from
     /// this app. Persists across launches AND across app reinstalls (via
@@ -123,6 +141,7 @@ final class TrackLibrary: ObservableObject {
         self.profile = state.profile
         self.myTracks = state.myTracks
         self.feed = state.feed
+        self.radioSessions = state.radioSessions
         self.deletedTrackIds = state.deletedTrackIds
         self.deletedPostUUIDs = state.deletedPostUUIDs
         self.deletedRemotePostIds = state.deletedRemotePostIds
@@ -226,6 +245,95 @@ final class TrackLibrary: ObservableObject {
         }
         guard track.authorUserId == nil else { return false }
         return track.handle.lowercased() == profile.handle.lowercased()
+    }
+
+    // MARK: – Radio
+
+    /// All ready music tracks the user can add to a radio queue.
+    var albumCandidateTracks: [Track] {
+        var seen: Set<UUID> = []
+        return (myTracks + feed).filter { track in
+            guard seen.insert(track.id).inserted else { return false }
+            guard track.kind == .music else { return false }
+            if case .ready = track.status { return true }
+            return false
+        }
+        .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    func currentTrack(for session: RadioSession) -> Track? {
+        guard !session.queueTrackIds.isEmpty,
+              session.currentIndex < session.queueTrackIds.count else { return nil }
+        let id = session.queueTrackIds[session.currentIndex]
+        return myTracks.first(where: { $0.id == id })
+            ?? feed.first(where: { $0.id == id })
+    }
+
+    func startRadio(title: String, notes: String, queueTrackIds: [UUID]) -> UUID {
+        let queue = orderedUnique(queueTrackIds)
+        guard !queue.isEmpty else { return UUID() }
+        let finalTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "\(profile.name)'s radio"
+            : title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let idx = radioSessions.firstIndex(where: {
+            $0.normalizedHostHandle == profile.handle.normalizedHandle
+        }) {
+            radioSessions[idx].title = finalTitle
+            radioSessions[idx].notes = notes
+            radioSessions[idx].hostName = profile.name
+            radioSessions[idx].hostHandle = profile.handle
+            radioSessions[idx].queueTrackIds = queue
+            radioSessions[idx].currentIndex = min(radioSessions[idx].currentIndex, max(0, queue.count - 1))
+            radioSessions[idx].isLive = true
+            radioSessions[idx].startedAt = radioSessions[idx].startedAt ?? Date()
+            persist()
+            return radioSessions[idx].id
+        }
+        let session = RadioSession(
+            title: finalTitle,
+            notes: notes,
+            hostName: profile.name,
+            hostHandle: profile.handle,
+            queueTrackIds: queue,
+            currentIndex: 0,
+            isLive: true,
+            startedAt: Date()
+        )
+        radioSessions.insert(session, at: 0)
+        persist()
+        return session.id
+    }
+
+    func updateRadioSession(id: UUID, title: String, notes: String, queueTrackIds: [UUID]) {
+        guard let idx = radioSessions.firstIndex(where: { $0.id == id }) else { return }
+        let queue = orderedUnique(queueTrackIds)
+        radioSessions[idx].title = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? radioSessions[idx].title
+            : title.trimmingCharacters(in: .whitespacesAndNewlines)
+        radioSessions[idx].notes = notes
+        radioSessions[idx].queueTrackIds = queue
+        radioSessions[idx].currentIndex = min(radioSessions[idx].currentIndex, max(0, queue.count - 1))
+        persist()
+    }
+
+    func stopRadio(id: UUID) {
+        guard let idx = radioSessions.firstIndex(where: { $0.id == id }) else { return }
+        radioSessions[idx].isLive = false
+        radioSessions[idx].startedAt = nil
+        persist()
+    }
+
+    func advanceRadio(id: UUID) {
+        guard let idx = radioSessions.firstIndex(where: { $0.id == id }),
+              !radioSessions[idx].queueTrackIds.isEmpty else { return }
+        radioSessions[idx].currentIndex =
+            (radioSessions[idx].currentIndex + 1) % radioSessions[idx].queueTrackIds.count
+        persist()
+    }
+
+    private func orderedUnique(_ ids: [UUID]) -> [UUID] {
+        var seen: Set<UUID> = []
+        return ids.filter { seen.insert($0).inserted }
     }
 
     // MARK: – Profile editing
@@ -1755,7 +1863,7 @@ final class TrackLibrary: ObservableObject {
                 coverImageUrl: cover,
                 token: token
             )
-        case .music:
+        case .music, .radio:
             return nil
         }
     }
@@ -1900,6 +2008,7 @@ final class TrackLibrary: ObservableObject {
         var profile: UserProfile
         var myTracks: [Track]
         var feed: [Track]
+        var radioSessions: [RadioSession] = []
         // Tombstones + local edits live in library.json AND in the keychain
         // (mirrored on every persist). Keychain is the durable store across
         // app reinstalls; library.json is the fast session-level cache.
@@ -1910,17 +2019,19 @@ final class TrackLibrary: ObservableObject {
         var localEdits: [String: LocalEdit] = [:]
 
         enum CodingKeys: String, CodingKey {
-            case profile, myTracks, feed
+            case profile, myTracks, feed, radioSessions
             case deletedTrackIds, deletedPostUUIDs, deletedRemotePostIds, localEdits
         }
 
         init(profile: UserProfile, myTracks: [Track], feed: [Track],
+             radioSessions: [RadioSession] = [],
              deletedTrackIds: Set<String> = [], deletedPostUUIDs: Set<UUID> = [],
              deletedRemotePostIds: Set<Int> = [],
              localEdits: [String: LocalEdit] = [:]) {
             self.profile = profile
             self.myTracks = myTracks
             self.feed = feed
+            self.radioSessions = radioSessions
             self.deletedTrackIds = deletedTrackIds
             self.deletedPostUUIDs = deletedPostUUIDs
             self.deletedRemotePostIds = deletedRemotePostIds
@@ -1932,6 +2043,7 @@ final class TrackLibrary: ObservableObject {
             self.profile = try c.decode(UserProfile.self, forKey: .profile)
             self.myTracks = try c.decode([Track].self, forKey: .myTracks)
             self.feed = try c.decode([Track].self, forKey: .feed)
+            self.radioSessions = try c.decodeIfPresent([RadioSession].self, forKey: .radioSessions) ?? []
             self.deletedTrackIds = try c.decodeIfPresent(Set<String>.self, forKey: .deletedTrackIds) ?? []
             self.deletedPostUUIDs = try c.decodeIfPresent(Set<UUID>.self, forKey: .deletedPostUUIDs) ?? []
             self.deletedRemotePostIds = try c.decodeIfPresent(Set<Int>.self, forKey: .deletedRemotePostIds) ?? []
@@ -2020,6 +2132,7 @@ final class TrackLibrary: ObservableObject {
     private func persist() {
         let state = State(
             profile: profile, myTracks: myTracks, feed: feed,
+            radioSessions: radioSessions,
             deletedTrackIds: deletedTrackIds, deletedPostUUIDs: deletedPostUUIDs,
             deletedRemotePostIds: deletedRemotePostIds,
             localEdits: localEdits

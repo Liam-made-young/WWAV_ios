@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum AppTab: String, CaseIterable, Identifiable {
-    case home, search, play, plus, profile
+    case home, play, plus, profile
     var id: String { rawValue }
 }
 
@@ -22,17 +22,17 @@ struct TabBar: View {
                             if active == tab {
                                 RadialGradient(
                                     colors: [theme.glow, theme.accent.opacity(0.32), .clear],
-                                    center: .center, startRadius: 0, endRadius: 32
+                                    center: .center, startRadius: 0, endRadius: 36
                                 )
-                                .frame(width: 60, height: 40)
+                                .frame(width: 72, height: 52)
                                 .clipShape(Capsule())
                             }
                             TabIcon(tab: tab, active: active == tab)
                         }
-                        .frame(width: 60, height: 40)
+                        .frame(width: 72, height: 52)
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
+                    .padding(.vertical, 20)
                     .contentShape(Rectangle())     // entire column is the tap target
                 }
                 .buttonStyle(.plain)
@@ -58,8 +58,6 @@ private struct TabIcon: View {
             switch tab {
             case .home:
                 HomeIcon(stroke: color)
-            case .search:
-                SearchIcon(stroke: color)
             case .play:
                 PlayIcon(stroke: color, fill: color)
             case .plus:
@@ -68,7 +66,7 @@ private struct TabIcon: View {
                 ProfileIcon(stroke: color)
             }
         }
-        .frame(width: 28, height: 28)
+        .frame(width: 38, height: 38)
     }
 }
 
@@ -90,27 +88,7 @@ private struct HomeIcon: View {
                 p.addLine(to: CGPoint(x: 3*s, y: 20*s))
                 p.closeSubpath()
             }
-            .stroke(stroke, style: StrokeStyle(lineWidth: 1.4, lineJoin: .round))
-        }
-    }
-}
-
-private struct SearchIcon: View {
-    let stroke: Color
-    var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width
-            ZStack {
-                Circle()
-                    .stroke(stroke, lineWidth: 1.4)
-                    .frame(width: w * 0.55, height: w * 0.55)
-                    .position(x: w * 0.44, y: w * 0.44)
-                Path { p in
-                    p.move(to: CGPoint(x: w * 0.65, y: w * 0.65))
-                    p.addLine(to: CGPoint(x: w * 0.85, y: w * 0.85))
-                }
-                .stroke(stroke, style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
-            }
+            .stroke(stroke, style: StrokeStyle(lineWidth: 1.5, lineJoin: .round))
         }
     }
 }
@@ -122,7 +100,7 @@ private struct PlayIcon: View {
         GeometryReader { geo in
             let w = geo.size.width
             ZStack {
-                Circle().stroke(stroke, lineWidth: 1.4).padding(1.5)
+                Circle().stroke(stroke, lineWidth: 1.5).padding(1.5)
                 Path { p in
                     p.move(to: CGPoint(x: w * 0.42, y: w * 0.32))
                     p.addLine(to: CGPoint(x: w * 0.42, y: w * 0.68))
@@ -138,8 +116,8 @@ private struct PlusIcon: View {
     let stroke: Color
     var body: some View {
         ZStack {
-            Capsule().fill(stroke).frame(width: 1.6, height: 14)
-            Capsule().fill(stroke).frame(width: 14, height: 1.6)
+            Capsule().fill(stroke).frame(width: 2, height: 18)
+            Capsule().fill(stroke).frame(width: 18, height: 2)
         }
     }
 }
@@ -151,7 +129,7 @@ private struct ProfileIcon: View {
             let w = geo.size.width
             ZStack {
                 Circle()
-                    .stroke(stroke, lineWidth: 1.4)
+                    .stroke(stroke, lineWidth: 1.5)
                     .frame(width: w * 0.32, height: w * 0.32)
                     .position(x: w * 0.5, y: w * 0.38)
                 Path { p in
@@ -159,7 +137,7 @@ private struct ProfileIcon: View {
                     p.addQuadCurve(to: CGPoint(x: w * 0.8, y: w * 0.85),
                                    control: CGPoint(x: w * 0.5, y: w * 0.55))
                 }
-                .stroke(stroke, style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+                .stroke(stroke, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
             }
         }
     }

@@ -320,6 +320,7 @@ private struct FeedComposerCard: View {
     private func iconName(for kind: PostKind) -> String {
         switch kind {
         case .music: return "music.note"
+        case .radio: return "radio"
         case .image: return "photo"
         case .text: return "text.bubble"
         case .video: return "play.rectangle"
@@ -404,10 +405,11 @@ struct FeedItemView: View {
     @ViewBuilder
     private var bodyContent: some View {
         switch track.kind {
-        case .music: musicBody
-        case .image: imageBody
-        case .text:  textBody
-        case .video: videoBody
+        case .music:         musicBody
+        case .radio:         textBody   // radio posts render like text in the feed
+        case .image:         imageBody
+        case .text:          textBody
+        case .video:         videoBody
         }
     }
 
@@ -864,13 +866,13 @@ private struct PublicProfilePostRow: View {
                         .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
                 }
             }
-        case .text:
+        case .text, .radio:
             ZStack {
                 LinearGradient(
                     colors: [theme.sand, theme.sandDeep.opacity(0.64)],
                     startPoint: .topLeading, endPoint: .bottomTrailing
                 )
-                Image(systemName: "text.bubble")
+                Image(systemName: track.kind == .radio ? "radio" : "text.bubble")
                     .font(.system(size: 18, weight: .regular))
                     .foregroundStyle(theme.muted)
             }

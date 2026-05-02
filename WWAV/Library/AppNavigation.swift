@@ -117,8 +117,8 @@ final class AppNavigation: ObservableObject {
         case .image:
             imageViewerPost = track
             library.incrementPlays(of: track.id)
-        case .text:
-            // Text posts live entirely in the feed; tapping is a no-op.
+        case .text, .radio:
+            // Text and radio posts live entirely in the feed; tapping is a no-op.
             break
         }
     }

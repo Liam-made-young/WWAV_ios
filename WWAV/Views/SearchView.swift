@@ -189,11 +189,11 @@ private struct ResultRow: View {
                         .font(.system(size: 14)).foregroundStyle(.white).shadow(radius: 2)
                 }
             }
-        case .text:
+        case .text, .radio:
             ZStack {
                 LinearGradient(colors: [theme.sand, theme.sandDeep.opacity(0.6)],
                                startPoint: .topLeading, endPoint: .bottomTrailing)
-                Image(systemName: "text.alignleft")
+                Image(systemName: track.kind == .radio ? "radio" : "text.alignleft")
                     .font(.system(size: 16)).foregroundStyle(theme.muted)
             }
         }
