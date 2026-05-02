@@ -1344,6 +1344,119 @@ final class TrackLibrary: ObservableObject {
         }
     }
 
+    // MARK: – Remix
+
+    /// Creates a remixed music track from four user-supplied stem URLs.
+    /// The stems are copied into local storage, a new `Track` is stamped
+    /// with `parentTrackId` / `parentRemoteTrackId`, inserted into myTracks
+    /// and returned. A server upload is attempted when a token is available.
+    @discardableResult
+    func createRemix(
+        parent: Track,
+        title: String,
+        bio: String,
+        newStems: [StemKind: URL],
+        cover: Data? = nil,
+        token: String? = nil
+    ) -> UUID {
+        let id = UUID()
+        let track = Track(
+            id: id,
+            kind: .music,
+            title: title.isEmpty ? "remix of \(parent.title)" : title,
+            artist: profile.name,
+            handle: profile.handle,
+            authorUserId: profile.remoteUserId,
+            authorProfilePicture: profile.profilePicture,
+            bio: bio,
+            stems: nil,
+            status: .uploading(phase: .saving, progress: 0),
+            durationSeconds: parent.durationSeconds,
+            parentTrackId: parent.id,
+            parentRemoteTrackId: parent.remoteTrackId
+        )
+        myTracks.insert(track, at: 0)
+        rebuildFeed()
+        persist()
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                // Copy each user-supplied stem into stable local storage.
+                var keys: [String: String] = [:]
+                var voxURL = newStems[.vox]     ?? parent.stems?.vox
+                var bassURL = newStems[.bass]   ?? parent.stems?.bass
+                var drumURL = newStems[.drum]   ?? parent.stems?.drum
+                var synthURL = newStems[.synth] ?? parent.stems?.synth
+
+                guard let v = voxURL, let b = bassURL, let d = drumURL, let s = synthURL else {
+                    self.markFailed(id: id, message: "missing stem files")
+                    return
+                }
+
+                for kind in StemKind.allCases {
+                    let srcURL: URL
+                    switch kind {
+                    case .vox: srcURL = v
+                    case .bass: srcURL = b
+                    case .drum: srcURL = d
+                    case .synth: srcURL = s
+                    }
+                    let stemKey = "uploads/\(id.uuidString)/stems/\(kind.demucsName).wav"
+                    let scoped = srcURL.startAccessingSecurityScopedResource()
+                    defer { if scoped { srcURL.stopAccessingSecurityScopedResource() } }
+                    let cached = try await self.storage.putFile(at: srcURL, key: stemKey, contentType: "audio/wav")
+                    keys[kind.demucsName] = stemKey
+                    switch kind {
+                    case .vox:   voxURL = cached
+                    case .bass:  bassURL = cached
+                    case .drum:  drumURL = cached
+                    case .synth: synthURL = cached
+                    }
+                }
+
+                guard let fv = voxURL, let fb = bassURL, let fd = drumURL, let fs = synthURL else {
+                    self.markFailed(id: id, message: "stem cache failed")
+                    return
+                }
+
+                let savedBundle = StemBundle(vox: fv, bass: fb, drum: fd, synth: fs)
+                self.update(id: id) {
+                    $0.stems = savedBundle
+                    $0.stemObjectKeys = keys
+                    $0.status = .ready
+                }
+
+                // Optional cover art.
+                if let img = cover, let token {
+                    if let coverPath = try? await Self.uploadCoverImage(img, token: token) {
+                        self.update(id: id) { $0.coverArtUrl = coverPath }
+                    }
+                }
+                self.persist()
+            } catch {
+                self.markFailed(id: id, message: error.localizedDescription)
+            }
+        }
+        return id
+    }
+
+    /// Returns the parent track of a remix by searching `feed + myTracks`.
+    /// Prefers matching by local UUID (`parentTrackId`), then falls back to
+    /// the server-side remote track ID (`parentRemoteTrackId`).
+    func parentTrack(of remix: Track) -> Track? {
+        let pool = feed + myTracks
+        if let localId = remix.parentTrackId,
+           let found = pool.first(where: { $0.id == localId }) {
+            return found
+        }
+        if let remoteId = remix.parentRemoteTrackId,
+           let found = pool.first(where: { $0.remoteTrackId == remoteId }) {
+            return found
+        }
+        return nil
+    }
+
     /// Removes a post and guarantees it never reappears in iOS again,
     /// regardless of what the server says on subsequent refreshes.
     ///

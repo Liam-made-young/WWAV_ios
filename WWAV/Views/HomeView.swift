@@ -334,6 +334,7 @@ struct FeedItemView: View {
     @Environment(\.theme) private var theme
     @EnvironmentObject var auth: AuthManager
     @EnvironmentObject var library: TrackLibrary
+    @EnvironmentObject var player: StemPlayerEngine
     @EnvironmentObject var nav: AppNavigation
     @State private var showingComments: Bool = false
     @State private var editing: Bool = false
@@ -453,10 +454,45 @@ struct FeedItemView: View {
     }
 
     private var titleRow: some View {
-        Text(track.title)
-            .wwavTitle(size: 22)
-            .lineLimit(2)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 4) {
+            Text(track.title)
+                .wwavTitle(size: 22)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if track.isRemix {
+                HStack(spacing: 6) {
+                    // Remix badge chip
+                    Text("remix")
+                        .font(.wwav(9, weight: .medium))
+                        .tracking(1.2)
+                        .foregroundStyle(theme.glow)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(theme.accent))
+
+                    // Genealogy button — opens parent track
+                    if let parent = library.parentTrack(of: track) {
+                        Button {
+                            nav.openPost(parent, in: library, with: player)
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "arrow.up.left.circle")
+                                    .font(.system(size: 10, weight: .regular))
+                                Text("source")
+                                    .font(.wwav(9, weight: .light))
+                                    .tracking(1.0)
+                            }
+                            .foregroundStyle(theme.muted)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(theme.muted.opacity(0.14)))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: – Album

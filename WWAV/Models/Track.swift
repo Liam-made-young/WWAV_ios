@@ -180,6 +180,15 @@ struct Track: Identifiable, Codable, Equatable {
     var liked: Bool = false
     /// Local-only repost state until the backend repost endpoint exists.
     var reposted: Bool = false
+    /// Local UUID of the parent track, when this track is a remix of a track
+    /// the current user uploaded on this device.
+    var parentTrackId: UUID?
+    /// Server-side track ID of the parent, for remixes of cross-user tracks
+    /// discovered through the feed.
+    var parentRemoteTrackId: String?
+
+    /// True when this track is a remix of another track.
+    var isRemix: Bool { parentTrackId != nil || parentRemoteTrackId != nil }
 
     /// Resolved cover-art URL ready for `AsyncImage`, or nil if no cover.
     var coverImageURL: URL? {
@@ -247,6 +256,7 @@ struct Track: Identifiable, Codable, Equatable {
         case imageUrls, videoURL, videoDuration, remotePostId, textBody, albumTrackIds
         case status, durationSeconds, createdAt
         case plays, loves, reposts, comments, liked, reposted
+        case parentTrackId, parentRemoteTrackId
     }
 
     init(
@@ -280,7 +290,9 @@ struct Track: Identifiable, Codable, Equatable {
         reposts: Int = 0,
         comments: Int = 0,
         liked: Bool = false,
-        reposted: Bool = false
+        reposted: Bool = false,
+        parentTrackId: UUID? = nil,
+        parentRemoteTrackId: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -313,6 +325,8 @@ struct Track: Identifiable, Codable, Equatable {
         self.comments = comments
         self.liked = liked
         self.reposted = reposted
+        self.parentTrackId = parentTrackId
+        self.parentRemoteTrackId = parentRemoteTrackId
     }
 
     init(from decoder: Decoder) throws {
@@ -348,5 +362,7 @@ struct Track: Identifiable, Codable, Equatable {
         self.comments        = try c.decodeIfPresent(Int.self, forKey: .comments) ?? 0
         self.liked           = try c.decodeIfPresent(Bool.self, forKey: .liked) ?? false
         self.reposted        = try c.decodeIfPresent(Bool.self, forKey: .reposted) ?? false
+        self.parentTrackId        = try c.decodeIfPresent(UUID.self, forKey: .parentTrackId)
+        self.parentRemoteTrackId  = try c.decodeIfPresent(String.self, forKey: .parentRemoteTrackId)
     }
 }

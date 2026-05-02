@@ -7,6 +7,7 @@ struct PlayView: View {
     @EnvironmentObject var auth: AuthManager
     @Environment(\.theme) private var theme
     @State private var showingComments = false
+    @State private var showingRemix: Bool = false
 
     private var currentMusicTrack: Track? {
         guard let current = player.currentTrack else { return nil }
@@ -46,6 +47,11 @@ struct PlayView: View {
         }
         .onAppear { autoLoadIfNeeded() }
         .onChange(of: library.myTracks) { _, _ in autoLoadIfNeeded() }
+        .fullScreenCover(isPresented: $showingRemix) {
+            if let track = player.currentTrack {
+                RemixSheet(track: track)
+            }
+        }
     }
 
     private var stemBody: some View {
@@ -168,9 +174,40 @@ struct PlayView: View {
                 Spacer()
             }
             if let track = currentMusicTrack {
-                Text("\(track.artist.lowercased()) — \(track.bio.isEmpty ? "stems ready" : "stems")")
-                    .wwavLabel(size: 13, tracking: 1.5)
-                    .foregroundStyle(theme.muted)
+                HStack(spacing: 8) {
+                    Text("\(track.artist.lowercased()) — \(track.bio.isEmpty ? "stems ready" : "stems")")
+                        .wwavLabel(size: 13, tracking: 1.5)
+                        .foregroundStyle(theme.muted)
+
+                    if track.isRemix {
+                        Text("remix")
+                            .font(.wwav(9, weight: .medium))
+                            .tracking(1.2)
+                            .foregroundStyle(theme.glow)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(theme.accent))
+
+                        if let parent = library.parentTrack(of: track) {
+                            Button {
+                                nav.openPost(parent, in: library, with: player)
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "arrow.up.left.circle")
+                                        .font(.system(size: 10, weight: .regular))
+                                    Text("source")
+                                        .font(.wwav(9, weight: .light))
+                                        .tracking(1.0)
+                                }
+                                .foregroundStyle(theme.muted)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(theme.muted.opacity(0.14)))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -246,6 +283,23 @@ struct PlayView: View {
                 ) {
                     library.toggleRepost(track: track)
                 }
+
+                Button {
+                    showingRemix = true
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "waveform.badge.plus")
+                            .font(.system(size: 13, weight: .regular))
+                        Text("remix")
+                            .font(.wwav(10, weight: .light))
+                            .tracking(1)
+                    }
+                    .foregroundStyle(theme.accent)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 7)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
 
                 Text("\(short(track.plays)) plays")
                     .font(.wwav(10, weight: .light))
