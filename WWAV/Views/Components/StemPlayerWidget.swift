@@ -140,11 +140,13 @@ private struct StemPlayerSceneView: UIViewRepresentable {
             cameraNode.position = SCNVector3(0, 0, 4.2)
             scene.rootNode.addChildNode(cameraNode)
 
-            // Lights — warm key from upper-left, cool fill from lower-right, soft ambient.
+            // Lights — softer key from upper-left so the coin reads as lit by a
+            // single source rather than spotlit. Slightly stronger ambient
+            // pulls the silhouette out of shadow on the bottom half.
             let key = SCNLight()
             key.type = .directional
             key.color = UIColor(red: 0.82, green: 0.94, blue: 1.0, alpha: 1)
-            key.intensity = 1300
+            key.intensity = 1100
             let keyNode = SCNNode()
             keyNode.light = key
             keyNode.eulerAngles = SCNVector3(-Float.pi / 4, Float.pi / 5, 0)
@@ -162,7 +164,7 @@ private struct StemPlayerSceneView: UIViewRepresentable {
             let ambient = SCNLight()
             ambient.type = .ambient
             ambient.color = UIColor(red: 0.32, green: 0.40, blue: 0.48, alpha: 1)
-            ambient.intensity = 320
+            ambient.intensity = 380
             let ambientNode = SCNNode()
             ambientNode.light = ambient
             scene.rootNode.addChildNode(ambientNode)

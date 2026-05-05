@@ -16,6 +16,9 @@ struct DJConsoleView: View {
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var library: TrackLibrary
+    @State private var preparingTrackID: UUID?
+    @State private var queueError: String?
 
     var body: some View {
         ZStack {
@@ -30,7 +33,14 @@ struct DJConsoleView: View {
                     VStack(alignment: .leading, spacing: 20) {
                         vuMeter
                         statusPill
+                        messagesSection
                         queueSection
+                        if let queueError {
+                            Text(queueError)
+                                .font(.wwav(12, weight: .light, italic: true))
+                                .foregroundStyle(Color.red.opacity(0.72))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                     .padding(.horizontal, 24)
                     .padding(.bottom, 120)
@@ -64,6 +74,16 @@ struct DJConsoleView: View {
                 .font(.wwav(15, weight: .light, italic: true))
                 .foregroundStyle(theme.ink)
                 .lineLimit(1)
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(theme.glow)
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(theme.ink.opacity(0.18)))
+            }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -116,6 +136,55 @@ struct DJConsoleView: View {
         .overlay(Capsule().stroke(theme.muted.opacity(0.20), lineWidth: 1))
     }
 
+    // MARK: – Messages
+
+    private var messagesSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("listener messages").wwavLabel(size: 10, tracking: 2)
+                Spacer()
+                Text("\(broadcaster.messages.count)")
+                    .font(.wwav(10, weight: .light))
+                    .foregroundStyle(theme.muted)
+            }
+
+            if broadcaster.messages.isEmpty {
+                Text("messages from listeners will land here while you're live.")
+                    .font(.wwav(12, weight: .light, italic: true))
+                    .foregroundStyle(theme.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .background(boxBg)
+                    .overlay(boxStroke)
+            } else {
+                let recentMessages = Array(broadcaster.messages.suffix(6))
+                VStack(spacing: 0) {
+                    ForEach(Array(recentMessages.enumerated()), id: \.element.id) { index, message in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(message.senderHandle.isEmpty ? message.senderName : "@\(message.senderHandle)")
+                                .font(.wwav(10, weight: .medium))
+                                .tracking(1)
+                                .foregroundStyle(theme.muted)
+                            Text(message.text)
+                                .font(.wwav(13, weight: .light))
+                                .foregroundStyle(theme.ink)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        if index < recentMessages.count - 1 {
+                            Rectangle()
+                                .fill(theme.muted.opacity(0.14))
+                                .frame(height: 1)
+                        }
+                    }
+                }
+                .background(boxBg)
+                .overlay(boxStroke)
+            }
+        }
+    }
+
     // MARK: – Queue
 
     private var queueSection: some View {
@@ -135,12 +204,15 @@ struct DJConsoleView: View {
                         DJQueueRow(
                             track: track,
                             index: index + 1,
+                            isPreparing: preparingTrackID == track.id,
                             isPlaying: {
                                 if case .song(let t) = broadcaster.mode { return t.id == track.id }
                                 return false
                             }()
                         ) {
-                            broadcaster.playSong(track)
+                            Task {
+                                await playQueuedTrack(track)
+                            }
                         }
                         if index < queueTracks.count - 1 {
                             Rectangle()
@@ -216,6 +288,25 @@ struct DJConsoleView: View {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
             .stroke(theme.muted.opacity(0.22), lineWidth: 1)
     }
+
+    private func playQueuedTrack(_ track: Track) async {
+        guard preparingTrackID == nil else { return }
+        queueError = nil
+        preparingTrackID = track.id
+        library.setRadioCurrentTrack(id: session.id, trackId: track.id)
+        let primed = await library.prepareForPlayback(track)
+        guard let primed else {
+            preparingTrackID = nil
+            queueError = "couldn't load stems for \(track.title). try another song."
+            return
+        }
+        if broadcaster.playSong(primed) {
+            library.incrementPlays(of: primed.id)
+        } else {
+            queueError = "\(primed.title) isn't ready for radio playback yet."
+        }
+        preparingTrackID = nil
+    }
 }
 
 // MARK: – DJQueueRow
@@ -223,6 +314,7 @@ struct DJConsoleView: View {
 private struct DJQueueRow: View {
     let track: Track
     let index: Int
+    let isPreparing: Bool
     let isPlaying: Bool
     let onPlayNow: () -> Void
 
@@ -270,7 +362,12 @@ private struct DJQueueRow: View {
                 onPlayNow()
             } label: {
                 ZStack {
-                    if isPlaying {
+                    if isPreparing {
+                        Circle().fill(theme.sand.opacity(0.86))
+                        ProgressView()
+                            .tint(theme.accent)
+                            .scaleEffect(0.72)
+                    } else if isPlaying {
                         Circle().fill(theme.clayDeep)
                         // Small equalizer icon when playing
                         Image(systemName: "waveform")
@@ -287,7 +384,7 @@ private struct DJQueueRow: View {
                 .frame(width: 34, height: 34)
             }
             .buttonStyle(.plain)
-            .disabled(isPlaying)
+            .disabled(isPlaying || isPreparing)
         }
         .padding(10)
         .contentShape(Rectangle())

@@ -1,4 +1,6 @@
 import SwiftUI
+import UIKit
+import PhotosUI
 
 private let feedTabLabels = ["for you", "following", "friends"]
 
@@ -11,9 +13,42 @@ struct HomeView: View {
     @State private var feedTab: Int = 0
     @State private var showingSearch: Bool = false
     @State private var showingRadioLive: Bool = false
+    @State private var visibleFeedLimit: Int = Self.initialFeedWindow
+    @State private var showingStorySourceDialog: Bool = false
+    @State private var storyCameraOpen: Bool = false
+    @State private var storyLibraryOpen: Bool = false
+    @State private var storyLibraryItem: PhotosPickerItem?
+    @State private var viewingStoryGroup: StoryGroup?
+
+    private static let initialFeedWindow = 18
+    private static let feedWindowIncrement = 12
 
     private var currentFeed: [Track] {
         library.feed(for: feedTab)
+    }
+
+    private var groupedStories: [StoryGroup] {
+        var groupOrder: [String] = []
+        var groupMap: [String: (handle: String, authorName: String, pictureURL: URL?, stories: [WWAVStory])] = [:]
+        for story in library.activeStories {
+            let key = story.handle.lowercased()
+            if groupMap[key] == nil {
+                groupOrder.append(key)
+                groupMap[key] = (story.handle, story.authorName, story.authorProfilePictureURL, [])
+            }
+            groupMap[key]?.stories.append(story)
+        }
+        return groupOrder.compactMap { key -> StoryGroup? in
+            guard var entry = groupMap[key] else { return nil }
+            entry.stories.reverse() // chronological order for sequential viewing
+            return StoryGroup(
+                id: key,
+                handle: entry.handle,
+                authorName: entry.authorName,
+                authorProfilePictureURL: entry.pictureURL,
+                stories: entry.stories
+            )
+        }
     }
 
     var body: some View {
@@ -21,42 +56,96 @@ struct HomeView: View {
             theme.pageRadial.ignoresSafeArea()
             VStack(spacing: 0) {
                 header
+                storiesRail
                 tabPicker
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        FeedComposerCard()
-                            .padding(.horizontal, 24)
-                            .padding(.top, 14)
-                            .padding(.bottom, 4)
-                        SoftRule()
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        let feed = currentFeed
+                        let visibleFeed = Array(feed.prefix(visibleFeedLimit))
+                        LazyVStack(spacing: 0) {
+                            Color.clear
+                                .frame(height: 0)
+                                .id("feedTop")
+                            FeedComposerCard()
+                                .padding(.horizontal, 24)
+                                .padding(.top, 14)
+                                .padding(.bottom, 4)
+                            SoftRule()
 
-                        if currentFeed.isEmpty {
-                            EmptyState(
-                                title: emptyTitle,
-                                body: emptyBody
-                            )
-                            .frame(minHeight: 320)
-                        } else {
-                            ForEach(Array(currentFeed.enumerated()), id: \.element.id) { idx, track in
-                                FeedItemView(track: track, accent: idx == 0) {
-                                    nav.openPost(track, in: library, with: player)
+                            if feed.isEmpty {
+                                EmptyState(
+                                    title: emptyTitle,
+                                    body: emptyBody
+                                )
+                                .frame(minHeight: 320)
+                            } else {
+                                ForEach(Array(visibleFeed.enumerated()), id: \.element.id) { idx, track in
+                                    FeedItemView(track: track, accent: idx == 0) {
+                                        nav.openPost(track, in: library, with: player)
+                                    }
+                                    if idx < visibleFeed.count - 1 {
+                                        SoftRule()
+                                    }
                                 }
-                                if idx < currentFeed.count - 1 {
-                                    SoftRule()
+                                if visibleFeed.count < feed.count {
+                                    FeedPageSentinel {
+                                        showMoreFeedItems(total: feed.count)
+                                    }
                                 }
                             }
                         }
+                        .padding(.bottom, 12)
                     }
-                    .padding(.bottom, 12)
-                }
-                .refreshable {
-                    await library.refresh(token: auth.token)
+                    .refreshable {
+                        visibleFeedLimit = Self.initialFeedWindow
+                        await library.refresh(token: auth.token, force: true)
+                    }
+                    .onChange(of: nav.homeFeedPing) { _, _ in
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.85)) {
+                            proxy.scrollTo("feedTop", anchor: .top)
+                        }
+                        visibleFeedLimit = Self.initialFeedWindow
+                        Task { await library.refresh(token: auth.token, force: true) }
+                    }
                 }
             }
         }
-        .task { await library.refresh(token: auth.token) }
+        .task(id: auth.token) { await library.refresh(token: auth.token) }
+        .onChange(of: feedTab) { _, _ in
+            visibleFeedLimit = Self.initialFeedWindow
+        }
         .fullScreenCover(item: $nav.imageViewerPost) { post in
             FullscreenImageViewer(post: post)
+        }
+        .fullScreenCover(item: $viewingStoryGroup) { group in
+            GroupedStoryViewer(group: group)
+        }
+        .fullScreenCover(isPresented: $storyCameraOpen) {
+            WWAVCameraImagePicker { image in
+                createStory(from: image)
+            }
+            .ignoresSafeArea()
+        }
+        .photosPicker(
+            isPresented: $storyLibraryOpen,
+            selection: $storyLibraryItem,
+            matching: .images,
+            preferredItemEncoding: .compatible,
+            photoLibrary: .shared()
+        )
+        .confirmationDialog("post story", isPresented: $showingStorySourceDialog, titleVisibility: .visible) {
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                Button("open camera") {
+                    storyCameraOpen = true
+                }
+            }
+            Button("open camera roll") {
+                storyLibraryOpen = true
+            }
+            Button("cancel", role: .cancel) {}
+        }
+        .onChange(of: storyLibraryItem) { _, item in
+            Task { await loadStoryImage(from: item) }
         }
         .sheet(isPresented: $showingSearch) {
             SearchView()
@@ -110,10 +199,32 @@ struct HomeView: View {
         .padding(.bottom, 14)
     }
 
+    private var storiesRail: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .top, spacing: 14) {
+                StoryPostButton(
+                    profilePictureURL: Track.resolveImageURL(library.profile.profilePicture),
+                    handle: library.profile.handle
+                ) {
+                    showingStorySourceDialog = true
+                }
+
+                ForEach(groupedStories) { group in
+                    StoryBubble(group: group) {
+                        viewingStoryGroup = group
+                    }
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 8)
+        }
+        .padding(.bottom, 4)
+    }
+
     private func headerButton(icon: String, label: String) -> some View {
         HStack(spacing: 6) {
             Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
             Text(label)
                 .font(.wwav(10, weight: .medium, italic: true))
                 .tracking(1.3)
@@ -121,23 +232,42 @@ struct HomeView: View {
         .foregroundStyle(theme.ink)
         .padding(.horizontal, 11)
         .padding(.vertical, 8)
-        .background(Capsule().fill(theme.sand.opacity(0.66)))
-        .overlay(Capsule().stroke(theme.muted.opacity(0.20), lineWidth: 1))
+        .background(Capsule().fill(theme.sand.opacity(WWAVOpacity.firm)))
+        .overlay(
+            Capsule().strokeBorder(
+                LinearGradient(
+                    colors: [theme.glow.opacity(0.45), theme.muted.opacity(WWAVOpacity.soft)],
+                    startPoint: .top, endPoint: .bottom
+                ),
+                lineWidth: 1
+            )
+        )
     }
 
     private var tabPicker: some View {
         HStack(spacing: 4) {
             ForEach(0..<3, id: \.self) { i in
                 Button {
-                    withAnimation(.easeInOut(duration: 0.2)) { feedTab = i }
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { feedTab = i }
                 } label: {
                     VStack(spacing: 6) {
                         Text(feedTabLabels[i])
                             .font(.wwav(13, weight: feedTab == i ? .medium : .light, italic: true))
                             .foregroundStyle(feedTab == i ? theme.ink : theme.muted)
+                            .background(
+                                Group {
+                                    if feedTab == i {
+                                        Capsule()
+                                            .fill(theme.accent.opacity(0.18))
+                                            .frame(height: 6)
+                                            .blur(radius: 8)
+                                            .offset(y: 4)
+                                    }
+                                }
+                            )
                         Rectangle()
                             .fill(feedTab == i ? theme.accent : theme.muted.opacity(0.15))
-                            .frame(height: feedTab == i ? 1.5 : 1)
+                            .frame(height: feedTab == i ? 2 : 1)
                     }
                     .padding(.vertical, 4)
                     .frame(maxWidth: .infinity)
@@ -147,9 +277,351 @@ struct HomeView: View {
         }
         .padding(.horizontal, 24)
     }
+
+    private func showMoreFeedItems(total: Int) {
+        guard visibleFeedLimit < total else { return }
+        visibleFeedLimit = min(total, visibleFeedLimit + Self.feedWindowIncrement)
+    }
+
+    private func createStory(from image: UIImage) {
+        let data = image.jpegData(compressionQuality: 0.86) ?? Data()
+        guard !data.isEmpty else { return }
+        library.createStory(image: data, token: auth.token)
+    }
+
+    private func loadStoryImage(from item: PhotosPickerItem?) async {
+        guard let item else { return }
+        var selectedImage: UIImage?
+        if let data = try? await item.loadTransferable(type: Data.self),
+           let image = UIImage(data: data) {
+            selectedImage = image
+        }
+        await MainActor.run {
+            if let selectedImage {
+                createStory(from: selectedImage)
+            }
+            storyLibraryItem = nil
+        }
+    }
 }
 
 private let feedComposerKinds: [PostKind] = [.text, .music, .image, .video]
+
+private struct FeedPageSentinel: View {
+    let onAppear: () -> Void
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        ProgressView()
+            .tint(theme.accent)
+            .scaleEffect(0.82)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 18)
+            .onAppear(perform: onAppear)
+    }
+}
+
+private struct StoryGroup: Identifiable {
+    let id: String       // lowercased handle — one group per user
+    let handle: String
+    let authorName: String
+    let authorProfilePictureURL: URL?
+    let stories: [WWAVStory]  // chronological order (oldest first)
+}
+
+private struct StoryPostButton: View {
+    let profilePictureURL: URL?
+    let handle: String
+    let action: () -> Void
+
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                ZStack(alignment: .bottomTrailing) {
+                    ProfileAvatar(url: profilePictureURL, size: 62)
+                        .overlay(
+                            Circle()
+                                .strokeBorder(
+                                    LinearGradient(
+                                        colors: [theme.glow.opacity(0.78), theme.accent.opacity(0.58)],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    ),
+                                    lineWidth: 2
+                                )
+                        )
+
+                    ZStack {
+                        Circle().fill(theme.accent)
+                        Image(systemName: "plus")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(theme.glow)
+                    }
+                    .frame(width: 23, height: 23)
+                    .overlay(Circle().stroke(theme.sand, lineWidth: 2))
+                    .offset(x: 2, y: 2)
+                }
+                Text(handle.normalizedStoryHandle.isEmpty ? "you" : "@\(handle.normalizedStoryHandle)")
+                    .font(.wwav(10, weight: .light))
+                    .foregroundStyle(theme.muted)
+                    .lineLimit(1)
+                    .frame(width: 70)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Post story")
+    }
+}
+
+private struct StoryBubble: View {
+    let group: StoryGroup
+    let action: () -> Void
+
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                ProfileAvatar(url: group.authorProfilePictureURL, size: 62)
+                    .overlay(
+                        Circle()
+                            .strokeBorder(
+                                LinearGradient(
+                                    colors: [theme.accent, theme.clayDeep, theme.glow.opacity(0.72)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                lineWidth: 2.5
+                            )
+                    )
+
+                Text(group.handle.normalizedStoryHandle.isEmpty ? "..." : "@\(group.handle.normalizedStoryHandle)")
+                    .font(.wwav(10, weight: .light))
+                    .foregroundStyle(theme.muted)
+                    .lineLimit(1)
+                    .frame(width: 70)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct GroupedStoryViewer: View {
+    let group: StoryGroup
+
+    @State private var currentIndex: Int = 0
+    @State private var storyToken: UUID = .init()
+    @State private var progress: CGFloat = 0
+    @State private var showingDeleteConfirmation: Bool = false
+
+    @EnvironmentObject var library: TrackLibrary
+    @EnvironmentObject var auth: AuthManager
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.theme) private var theme
+
+    private let storyDuration: Double = 5.0
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            Color.black.ignoresSafeArea()
+
+            if let story = currentStory {
+                CachedAsyncImage(url: story.imageURL, contentMode: .fit) {
+                    ProgressView().tint(.white)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+            }
+
+            // Scrim so top UI is legible
+            LinearGradient(
+                colors: [.black.opacity(0.52), .clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 160)
+            .frame(maxWidth: .infinity, alignment: .top)
+            .ignoresSafeArea(edges: .top)
+            .allowsHitTesting(false)
+
+            // Tap zones: left half = previous, right half = next
+            HStack(spacing: 0) {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { goToPrevious() }
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { goToNext() }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea()
+
+            // Top UI
+            VStack(spacing: 10) {
+                // Progress bars — one segment per story
+                HStack(spacing: 4) {
+                    ForEach(0..<group.stories.count, id: \.self) { i in
+                        StoryProgressSegment(progress: segmentProgress(for: i))
+                    }
+                }
+                .padding(.horizontal, 14)
+
+                // Author header
+                HStack(spacing: 10) {
+                    ProfileAvatar(url: group.authorProfilePictureURL, size: 34)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(group.authorName)
+                            .font(.wwav(13, weight: .medium))
+                            .foregroundStyle(.white)
+                        if !group.handle.normalizedStoryHandle.isEmpty {
+                            Text("@\(group.handle.normalizedStoryHandle)")
+                                .font(.wwav(10, weight: .light))
+                                .foregroundStyle(.white.opacity(0.72))
+                        }
+                    }
+                    Spacer()
+                    if let story = currentStory,
+                       library.isAuthoredByCurrentUser(story) {
+                        Button {
+                            showingDeleteConfirmation = true
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 34, height: 34)
+                                .background(Circle().fill(.white.opacity(0.16)))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 34, height: 34)
+                            .background(Circle().fill(.white.opacity(0.16)))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 20)
+            }
+            .padding(.top, 12)
+        }
+        .task(id: storyToken) {
+            withAnimation(.none) { progress = 0 }
+            try? await Task.sleep(for: .milliseconds(32))
+            guard !Task.isCancelled else { return }
+            withAnimation(.linear(duration: storyDuration)) { progress = 1.0 }
+            try? await Task.sleep(for: .seconds(storyDuration))
+            guard !Task.isCancelled else { return }
+            goToNext()
+        }
+        .confirmationDialog("delete story", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
+            Button("delete story", role: .destructive) {
+                deleteCurrentStory()
+            }
+            Button("cancel", role: .cancel) {}
+        }
+    }
+
+    private var currentStory: WWAVStory? {
+        guard currentIndex < group.stories.count else { return nil }
+        return group.stories[currentIndex]
+    }
+
+    private func segmentProgress(for i: Int) -> CGFloat {
+        if i < currentIndex { return 1.0 }
+        if i == currentIndex { return progress }
+        return 0.0
+    }
+
+    private func advanceTo(_ index: Int) {
+        let clamped = max(0, index)
+        guard clamped < group.stories.count else { dismiss(); return }
+        currentIndex = clamped
+        storyToken = UUID()
+    }
+
+    private func goToNext() { advanceTo(currentIndex + 1) }
+    private func goToPrevious() { advanceTo(currentIndex - 1) }
+
+    private func deleteCurrentStory() {
+        guard let story = currentStory else { return }
+        library.deleteStory(id: story.id, token: auth.token)
+        dismiss()
+    }
+}
+
+private struct StoryProgressSegment: View {
+    let progress: CGFloat
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.35))
+                Capsule()
+                    .fill(Color.white)
+                    .frame(width: geo.size.width * max(0, min(1, progress)))
+            }
+        }
+        .frame(height: 3)
+    }
+}
+
+struct WWAVCameraImagePicker: UIViewControllerRepresentable {
+    let onImage: (UIImage) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = UIImagePickerController.isSourceTypeAvailable(.camera) ? .camera : .photoLibrary
+        picker.allowsEditing = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onImage: onImage, dismiss: dismiss)
+    }
+
+    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        let onImage: (UIImage) -> Void
+        let dismiss: DismissAction
+
+        init(onImage: @escaping (UIImage) -> Void, dismiss: DismissAction) {
+            self.onImage = onImage
+            self.dismiss = dismiss
+        }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            if let image = info[.originalImage] as? UIImage {
+                onImage(image)
+            }
+            dismiss()
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            dismiss()
+        }
+    }
+}
+
+private extension String {
+    var normalizedStoryHandle: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+    }
+}
 
 private struct FeedComposerCard: View {
     @EnvironmentObject var library: TrackLibrary
@@ -160,9 +632,19 @@ private struct FeedComposerCard: View {
     @FocusState private var focused: Bool
     @State private var selectedKind: PostKind = .text
     @State private var draft: String = ""
+    @State private var imageItems: [PhotosPickerItem] = []
+    @State private var imageData: [Data] = []
+    @State private var imagePreviews: [UIImage] = []
+    @State private var showingImageSourceDialog: Bool = false
+    @State private var imageCameraOpen: Bool = false
+    @State private var imageLibraryOpen: Bool = false
 
     private var trimmedDraft: String {
         draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSubmitText: Bool {
+        !trimmedDraft.isEmpty || !imageData.isEmpty
     }
 
     var body: some View {
@@ -179,7 +661,7 @@ private struct FeedComposerCard: View {
 
                     Spacer(minLength: 0)
 
-                    actionButton
+                    actionButtons
                 }
             }
         }
@@ -190,30 +672,69 @@ private struct FeedComposerCard: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(theme.muted.opacity(0.20), lineWidth: 1)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            theme.glow.opacity(0.45),
+                            theme.muted.opacity(WWAVOpacity.soft),
+                        ],
+                        startPoint: .top, endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
         )
+        .onChange(of: imageItems) { _, newItems in
+            Task { await loadTextImages(from: newItems) }
+        }
+        .photosPicker(
+            isPresented: $imageLibraryOpen,
+            selection: $imageItems,
+            maxSelectionCount: 10,
+            matching: .images,
+            preferredItemEncoding: .compatible,
+            photoLibrary: .shared()
+        )
+        .fullScreenCover(isPresented: $imageCameraOpen) {
+            WWAVCameraImagePicker { image in
+                appendCameraImage(image)
+            }
+            .ignoresSafeArea()
+        }
+        .confirmationDialog("add image", isPresented: $showingImageSourceDialog, titleVisibility: .visible) {
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                Button("open camera") {
+                    imageCameraOpen = true
+                }
+            }
+            Button("open camera roll") {
+                imageLibraryOpen = true
+            }
+            Button("cancel", role: .cancel) {}
+        }
     }
 
     @ViewBuilder
     private var composerBody: some View {
         if selectedKind == .text {
-            ZStack(alignment: .topLeading) {
-                if draft.isEmpty {
-                    Text("what's happening?")
-                        .font(.wwav(16, weight: .light, italic: true))
-                        .foregroundStyle(theme.muted)
-                        .padding(.top, 8)
-                        .padding(.leading, 5)
-                }
+            VStack(alignment: .leading, spacing: 10) {
+                TextField(
+                    "",
+                    text: $draft,
+                    prompt: Text("what's happening?").foregroundStyle(theme.muted),
+                    axis: .vertical
+                )
+                .focused($focused)
+                .textFieldStyle(.plain)
+                .font(.wwav(16, weight: .light))
+                .foregroundStyle(theme.ink)
+                .lineLimit(2...5)
+                .frame(minHeight: 56, alignment: .topLeading)
+                .padding(.horizontal, 2)
+                .padding(.vertical, 6)
 
-                TextEditor(text: $draft)
-                    .focused($focused)
-                    .scrollContentBackground(.hidden)
-                    .font(.wwav(16, weight: .light))
-                    .foregroundStyle(theme.ink)
-                    .frame(minHeight: 56, maxHeight: 116)
-                    .padding(.horizontal, -5)
-                    .padding(.vertical, -8)
+                if !imagePreviews.isEmpty {
+                    composerImagePreview
+                }
             }
         } else {
             HStack(spacing: 10) {
@@ -238,44 +759,94 @@ private struct FeedComposerCard: View {
         }
     }
 
-    private var actionButton: some View {
-        Button {
+    private var actionButtons: some View {
+        Group {
             if selectedKind == .text {
-                submitText()
-            } else {
-                nav.compose(selectedKind)
-            }
-        } label: {
-            HStack(spacing: 5) {
-                if selectedKind != .text {
-                    Image(systemName: "arrow.up.forward")
-                        .font(.system(size: 10, weight: .medium))
+                HStack(spacing: 8) {
+                    Button {
+                        showingImageSourceDialog = true
+                    } label: {
+                        Image(systemName: "photo.on.rectangle")
+                            .font(.system(size: 13, weight: .regular))
+                            .foregroundStyle(imagePreviews.isEmpty ? theme.muted : theme.accent)
+                            .frame(width: 30, height: 30)
+                            .background(Circle().fill(theme.muted.opacity(WWAVOpacity.veil)))
+                            .overlay(Circle().stroke(theme.muted.opacity(WWAVOpacity.soft), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    composerActionButton("save", publication: .draft, filled: false)
+                    composerActionButton("post", publication: .published, filled: true)
                 }
-                Text(selectedKind == .text ? "post" : "open")
-                    .font(.wwav(11, weight: .regular, italic: true))
-                    .tracking(1.3)
+            } else {
+                Button {
+                    nav.compose(selectedKind)
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.up.forward")
+                            .font(.system(size: 10, weight: .medium))
+                        Text("open")
+                            .font(.wwav(11, weight: .regular, italic: true))
+                            .tracking(1.3)
+                    }
+                    .foregroundStyle(theme.glow)
+                    .padding(.vertical, 7)
+                    .padding(.horizontal, 13)
+                    .background(
+                        Capsule().fill(
+                            LinearGradient(
+                                colors: [theme.clay, theme.clayDeep],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                    )
+                }
+                .buttonStyle(.plain)
             }
-            .foregroundStyle(theme.glow)
-            .padding(.vertical, 7)
-            .padding(.horizontal, 13)
-            .background(
-                Capsule().fill(
-                    LinearGradient(
-                        colors: [theme.clay, theme.clayDeep],
-                        startPoint: .top, endPoint: .bottom
+        }
+    }
+
+    private func composerActionButton(
+        _ label: String,
+        publication: PublicationState,
+        filled: Bool
+    ) -> some View {
+        let enabled = canSubmitText
+        return Button {
+            submitText(publication: publication)
+        } label: {
+            Text(label)
+                .font(.wwav(11, weight: .regular, italic: true))
+                .tracking(1.3)
+                .foregroundStyle(filled ? theme.glow : theme.accent)
+                .padding(.vertical, filled ? 9 : 7)
+                .padding(.horizontal, 12)
+                .background(
+                    Capsule().fill(
+                        filled
+                            ? AnyShapeStyle(LinearGradient(
+                                colors: [theme.clay, theme.clayDeep],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ))
+                            : AnyShapeStyle(theme.sand.opacity(WWAVOpacity.firm))
                     )
                 )
-            )
+                .overlay(Capsule().stroke(theme.accent.opacity(filled ? 0 : 0.25), lineWidth: 1))
+                .shadow(
+                    color: (filled && enabled) ? theme.clay.opacity(0.30) : .clear,
+                    radius: 10, y: 6
+                )
         }
         .buttonStyle(.plain)
-        .disabled(selectedKind == .text && trimmedDraft.isEmpty)
-        .opacity(selectedKind == .text && trimmedDraft.isEmpty ? 0.5 : 1)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.35)
     }
 
     private func kindButton(_ kind: PostKind) -> some View {
         let active = selectedKind == kind
         return Button {
-            withAnimation(.easeInOut(duration: 0.16)) {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
                 selectedKind = kind
             }
             focused = kind == .text
@@ -285,22 +856,106 @@ private struct FeedComposerCard: View {
                 .foregroundStyle(active ? theme.glow : theme.muted)
                 .frame(width: 30, height: 30)
                 .background(
-                    Circle().fill(active ? theme.accent : theme.muted.opacity(0.10))
+                    Group {
+                        if active {
+                            Circle().fill(
+                                RadialGradient(
+                                    colors: [
+                                        theme.glow.opacity(0.55),
+                                        theme.accent,
+                                        theme.clayDeep,
+                                    ],
+                                    center: WWAVLight.sun,
+                                    startRadius: 1, endRadius: 28
+                                )
+                            )
+                        } else {
+                            Circle().fill(theme.muted.opacity(WWAVOpacity.veil))
+                        }
+                    }
                 )
                 .overlay(
-                    Circle().stroke(theme.muted.opacity(active ? 0 : 0.20), lineWidth: 1)
+                    Circle().stroke(theme.muted.opacity(active ? 0 : WWAVOpacity.soft), lineWidth: 1)
                 )
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
     }
 
-    private func submitText() {
+    private func submitText(publication: PublicationState) {
         let body = trimmedDraft
-        guard !body.isEmpty else { return }
-        _ = library.createTextPost(title: "", body: body, token: auth.token)
+        guard canSubmitText else { return }
+        _ = library.createTextPost(
+            title: "",
+            body: body,
+            images: imageData,
+            token: auth.token,
+            publication: publication
+        )
         draft = ""
+        imageItems = []
+        imageData = []
+        imagePreviews = []
         focused = false
+    }
+
+    private var composerImagePreview: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("\(imagePreviews.count) image\(imagePreviews.count == 1 ? "" : "s")")
+                    .font(.wwav(10, weight: .medium))
+                    .tracking(1.3)
+                    .foregroundStyle(theme.muted)
+                Spacer()
+                Button {
+                    imageItems = []
+                    imageData = []
+                    imagePreviews = []
+                } label: {
+                    Text("clear")
+                        .font(.wwav(10, weight: .light, italic: true))
+                        .foregroundStyle(theme.muted)
+                }
+                .buttonStyle(.plain)
+            }
+
+            TabView {
+                ForEach(Array(imagePreviews.enumerated()), id: \.offset) { _, image in
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity)
+                        .clipped()
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: imagePreviews.count > 1 ? .automatic : .never))
+            .frame(height: 154)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.muted.opacity(0.18), lineWidth: 1))
+        }
+    }
+
+    private func loadTextImages(from items: [PhotosPickerItem]) async {
+        var datas: [Data] = []
+        var previews: [UIImage] = []
+        for item in items {
+            if let data = try? await item.loadTransferable(type: Data.self),
+               let image = UIImage(data: data) {
+                datas.append(image.jpegData(compressionQuality: 0.85) ?? data)
+                previews.append(image)
+            }
+        }
+        await MainActor.run {
+            imageData = datas
+            imagePreviews = previews
+        }
+    }
+
+    private func appendCameraImage(_ image: UIImage) {
+        guard imagePreviews.count < 10 else { return }
+        guard let data = image.jpegData(compressionQuality: 0.85) else { return }
+        imageData.append(data)
+        imagePreviews.append(image)
     }
 
     private func iconName(for kind: PostKind) -> String {
@@ -340,6 +995,9 @@ struct FeedItemView: View {
     @EnvironmentObject var nav: AppNavigation
     @State private var showingComments: Bool = false
     @State private var editing: Bool = false
+    @State private var previewExpanded: Bool = false
+    @State private var previewPreparing: Bool = false
+    @State private var previewFailed: Bool = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -359,22 +1017,32 @@ struct FeedItemView: View {
                             Text(track.artist)
                                 .font(.wwav(15, weight: .medium))
                                 .foregroundStyle(theme.ink)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .layoutPriority(2)
                             Text("@\(track.handle)")
                                 .font(.wwav(12, weight: .light))
                                 .foregroundStyle(theme.muted)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .layoutPriority(1)
                         }
+                        .minimumScaleFactor(0.85)
                     }
                     .buttonStyle(.plain)
 
                     PostKindBadge(kind: track.kind)
+                        .fixedSize()
                     Spacer(minLength: 4)
                     Text(timeAgo(track.createdAt))
                         .font(.wwav(12, weight: .light))
                         .foregroundStyle(theme.muted)
+                        .fixedSize()
                     if library.canFollow(track) {
                         FollowMiniButton(isFollowing: library.isFollowing(track)) {
                             Task { await library.toggleFollow(track: track, token: auth.token) }
                         }
+                        .fixedSize()
                     }
                     if library.isAuthoredByCurrentUser(track) {
                         Button { editing = true } label: {
@@ -385,6 +1053,7 @@ struct FeedItemView: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .fixedSize()
                     }
                 }
 
@@ -423,36 +1092,79 @@ struct FeedItemView: View {
     private var musicBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             cover.padding(.top, 12)
-            titleRow.padding(.top, 12)
+            titleRow
+                .padding(.top, 12)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: handleMusicBodyTap)
             if !track.bio.isEmpty {
                 Text(track.bio)
                     .font(.wwav(13, weight: .light))
                     .foregroundStyle(theme.ink)
                     .padding(.top, 6)
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: handleMusicBodyTap)
             }
-            MiniWaveform(accent: accent).padding(.top, 10)
         }
     }
 
     private var cover: some View {
-        ZStack(alignment: .bottomTrailing) {
-            FeedMediaImage(url: track.coverImageURL, fallbackAspectRatio: 1)
-
-            Button(action: onPlay) {
-                ZStack {
-                    Circle().fill(
-                        RadialGradient(colors: [theme.clay, theme.clayDeep],
-                                       center: UnitPoint(x: 0.35, y: 0.30),
-                                       startRadius: 2, endRadius: 36)
-                    )
-                    Triangle().fill(theme.glow).frame(width: 12, height: 14)
-                        .offset(x: 1)
-                }
-                .frame(width: 50, height: 50)
-                .shadow(color: .black.opacity(0.30), radius: 6, y: 3)
+        ZStack {
+            if previewExpanded {
+                FeedInlineStemPreview(
+                    track: track,
+                    isPreparing: previewPreparing,
+                    failed: previewFailed,
+                    onPreviewTap: onPlay
+                )
+            } else {
+                FeedMediaImage(url: track.coverImageURL, fallbackAspectRatio: 1)
+                    .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .onTapGesture { openInlinePreview() }
             }
-            .buttonStyle(.plain)
-            .padding(12)
+        }
+    }
+
+    private func openInlinePreview() {
+        guard track.kind == .music else { return }
+        guard !previewExpanded else { return }
+        withAnimation(.easeInOut(duration: 0.18)) {
+            previewExpanded = true
+        }
+        previewFailed = false
+
+        if player.currentTrack?.id == track.id {
+            player.resume()
+        } else {
+            loadInlinePreview()
+        }
+    }
+
+    private func handleMusicBodyTap() {
+        if previewExpanded {
+            onPlay()
+        } else {
+            openInlinePreview()
+        }
+    }
+
+    private func loadInlinePreview() {
+        if track.stems != nil {
+            player.load(track)
+            return
+        }
+
+        previewPreparing = true
+        Task {
+            let primed = await library.prepareForPlayback(track)
+            await MainActor.run {
+                previewPreparing = false
+                guard previewExpanded, nav.active == .home else { return }
+                guard let primed else {
+                    previewFailed = true
+                    return
+                }
+                player.load(primed)
+            }
         }
     }
 
@@ -461,6 +1173,7 @@ struct FeedItemView: View {
             Text(track.title)
                 .wwavTitle(size: 22)
                 .lineLimit(2)
+                .minimumScaleFactor(0.85)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             if track.isRemix {
@@ -504,21 +1217,53 @@ struct FeedItemView: View {
         let tracks = library.albumTracks(for: track)
         return VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .bottomTrailing) {
-                FeedMediaImage(url: track.coverImageURL, fallbackAspectRatio: 1)
+                FeedMediaImage(url: track.coverImageURL, fallbackAspectRatio: 1, cornerRadius: 14)
+                    .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .onTapGesture(perform: onPlay)
+
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.46)],
+                    startPoint: .center,
+                    endPoint: .bottom
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .allowsHitTesting(false)
+
+                VStack {
+                    HStack {
+                        HStack(spacing: 6) {
+                            Image(systemName: "rectangle.stack.fill")
+                                .font(.system(size: 10, weight: .medium))
+                            Text("\(tracks.count) tracks")
+                                .font(.wwav(10, weight: .medium, italic: true))
+                                .tracking(1.1)
+                        }
+                        .foregroundStyle(theme.glow)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(.black.opacity(0.24)))
+                        Spacer()
+                    }
+                    Spacer()
+                }
+                .padding(12)
+                .allowsHitTesting(false)
 
                 if !tracks.isEmpty {
                     Button(action: onPlay) {
-                        ZStack {
-                            Circle().fill(
-                                RadialGradient(colors: [theme.clay, theme.clayDeep],
-                                               center: UnitPoint(x: 0.35, y: 0.30),
-                                               startRadius: 2, endRadius: 36)
-                            )
-                            Triangle().fill(theme.glow).frame(width: 12, height: 14)
-                                .offset(x: 1)
+                        HStack(spacing: 7) {
+                            Image(systemName: "arrow.up.forward")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text("open album")
+                                .font(.wwav(11, weight: .medium, italic: true))
+                                .tracking(1.1)
                         }
-                        .frame(width: 50, height: 50)
-                        .shadow(color: .black.opacity(0.30), radius: 6, y: 3)
+                        .foregroundStyle(theme.glow)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .background(Capsule().fill(theme.clayDeep.opacity(0.92)))
+                        .overlay(Capsule().stroke(theme.glow.opacity(0.18), lineWidth: 1))
+                        .shadow(color: .black.opacity(0.28), radius: 8, y: 4)
                     }
                     .buttonStyle(.plain)
                     .padding(12)
@@ -545,9 +1290,10 @@ struct FeedItemView: View {
                     ForEach(Array(tracks.prefix(6).enumerated()), id: \.element.id) { index, song in
                         HStack(spacing: 10) {
                             Text(String(format: "%02d", index + 1))
-                                .font(.wwav(10, weight: .light))
-                                .foregroundStyle(theme.muted)
-                                .frame(width: 24, alignment: .leading)
+                                .font(.wwav(10, weight: player.currentTrack?.id == song.id ? .medium : .light))
+                                .monospacedDigit()
+                                .foregroundStyle(player.currentTrack?.id == song.id ? theme.accent : theme.muted)
+                                .frame(width: 28, alignment: .center)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(song.title)
                                     .font(.wwav(13, weight: .medium))
@@ -559,8 +1305,18 @@ struct FeedItemView: View {
                                     .foregroundStyle(theme.muted)
                             }
                             Spacer(minLength: 0)
+                            if player.currentTrack?.id == song.id {
+                                Image(systemName: "speaker.wave.2.fill")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(theme.accent)
+                            } else {
+                                Image(systemName: "music.note")
+                                    .font(.system(size: 10, weight: .regular))
+                                    .foregroundStyle(theme.muted.opacity(0.72))
+                            }
                         }
-                        .padding(.vertical, 8)
+                        .padding(.vertical, 9)
+                        .contentShape(Rectangle())
                         if index < min(tracks.count, 6) - 1 {
                             Rectangle()
                                 .fill(theme.muted.opacity(0.14))
@@ -576,9 +1332,9 @@ struct FeedItemView: View {
                 }
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 12).fill(theme.sand.opacity(0.58)))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.muted.opacity(0.16), lineWidth: 1))
+            .padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(theme.sand.opacity(0.58)))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(theme.muted.opacity(0.16), lineWidth: 1))
             .padding(.top, 10)
         }
     }
@@ -625,6 +1381,10 @@ struct FeedItemView: View {
                 .padding(.top, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .multilineTextAlignment(.leading)
+            if !track.resolvedImageURLs.isEmpty {
+                ImageCarousel(urls: track.resolvedImageURLs)
+                    .padding(.top, 10)
+            }
         }
     }
 
@@ -682,6 +1442,7 @@ struct FeedItemView: View {
                 .font(.wwav(11, weight: .light))
                 .tracking(1)
                 .foregroundStyle(theme.muted)
+                .monospacedDigit()
 
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) { showingComments.toggle() }
@@ -694,7 +1455,7 @@ struct FeedItemView: View {
                         .tracking(1)
                 }
                 .foregroundStyle(showingComments ? theme.accent : theme.muted)
-                .padding(.vertical, 4).padding(.horizontal, 4)
+                .padding(.vertical, 6).padding(.horizontal, 8)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -705,9 +1466,10 @@ struct FeedItemView: View {
                         .font(.system(size: 12, weight: track.reposted ? .semibold : .regular))
                     Text("\(track.reposts)")
                         .font(.wwav(11, weight: .light)).tracking(1)
+                        .monospacedDigit()
                 }
                 .foregroundStyle(track.reposted ? theme.accent : theme.muted)
-                .padding(.vertical, 4).padding(.horizontal, 4)
+                .padding(.vertical, 6).padding(.horizontal, 8)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -720,15 +1482,26 @@ struct FeedItemView: View {
                         .font(.system(size: 12, weight: .regular))
                     Text("\(track.loves)")
                         .font(.wwav(11, weight: .light)).tracking(1)
+                        .monospacedDigit()
                 }
-                .foregroundStyle(track.liked ? Color.red.opacity(0.85) : theme.muted)
-                .padding(.vertical, 4).padding(.horizontal, 4)
+                .foregroundStyle(track.liked ? likedColor : theme.muted)
+                .padding(.vertical, 6).padding(.horizontal, 8)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
             Spacer()
         }
+    }
+
+    /// Hearts harmonize with the active palette: a soft red on the cool
+    /// light-blue palette (where it reads as a familiar like), the palette
+    /// accent on warmer colorways so it doesn't clash.
+    private var likedColor: Color {
+        // We can't introspect the palette case directly, so blend palette
+        // accent with red: the red dominates on cool palettes (where accent
+        // is blue) and the accent dominates on warm/red-adjacent palettes.
+        Color.red.opacity(0.78).wwavBlended(with: theme.accent, by: 0.30)
     }
 
     private func timeAgo(_ date: Date) -> String {
@@ -742,6 +1515,24 @@ struct FeedItemView: View {
     private func short(_ n: Int) -> String {
         if n >= 1000 { return String(format: "%.1fK", Double(n) / 1000) }
         return "\(n)"
+    }
+}
+
+private extension Color {
+    /// Linear blend of two SwiftUI colors via UIColor for runtime accuracy.
+    func wwavBlended(with other: Color, by t: CGFloat) -> Color {
+        let a = UIColor(self)
+        let b = UIColor(other)
+        var ar: CGFloat = 0, ag: CGFloat = 0, ab: CGFloat = 0, aa: CGFloat = 0
+        var br: CGFloat = 0, bg: CGFloat = 0, bb: CGFloat = 0, ba: CGFloat = 0
+        a.getRed(&ar, green: &ag, blue: &ab, alpha: &aa)
+        b.getRed(&br, green: &bg, blue: &bb, alpha: &ba)
+        return Color(
+            red: Double(ar + (br - ar) * t),
+            green: Double(ag + (bg - ag) * t),
+            blue: Double(ab + (bb - ab) * t),
+            opacity: Double(aa + (ba - aa) * t)
+        )
     }
 }
 
@@ -788,6 +1579,101 @@ private struct FollowMiniButton: View {
             )
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct FeedInlineStemPreview: View {
+    let track: Track
+    let isPreparing: Bool
+    let failed: Bool
+    /// Fired when the user taps the expanded feed preview. The embedded
+    /// stem widget is rendered as preview art here; full controls live in
+    /// the playback view.
+    let onPreviewTap: () -> Void
+
+    @EnvironmentObject var player: StemPlayerEngine
+    @Environment(\.theme) private var theme
+
+    private var isLoadedTrack: Bool {
+        player.currentTrack?.id == track.id
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let side = min(geo.size.width, geo.size.height)
+            ZStack {
+                // Background chrome. The full expanded preview receives the
+                // navigation tap below, while the SceneKit widget is drawn
+                // non-interactively inside feed cards.
+                ZStack {
+                    LinearGradient(
+                        colors: [
+                            theme.sand.opacity(0.92),
+                            theme.clay.opacity(0.20),
+                            theme.clayDeep.opacity(0.16)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+
+                    CachedAsyncImage(url: track.coverImageURL, contentMode: .fill) {
+                        Color.clear
+                    }
+                    .opacity(isLoadedTrack ? 0.14 : 0.34)
+                    .frame(width: geo.size.width, height: geo.size.height)
+                }
+
+                if isLoadedTrack {
+                    StemPlayerWidget(engine: player, size: side * 0.82)
+                        .frame(width: side * 0.90, height: side * 0.90)
+                        .allowsHitTesting(false)
+                }
+
+                if isPreparing || failed || !isLoadedTrack {
+                    VStack(spacing: 8) {
+                        if isPreparing {
+                            ProgressView()
+                                .tint(theme.accent)
+                                .scaleEffect(0.82)
+                        } else {
+                            Image(systemName: failed ? "exclamationmark.triangle" : "waveform")
+                                .font(.system(size: 17, weight: .light))
+                        }
+                        Text(failed ? "stems unavailable" : "loading preview")
+                            .font(.wwav(11, weight: .light, italic: true))
+                            .tracking(1.4)
+                    }
+                    .foregroundStyle(theme.muted)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(Capsule().fill(theme.sand.opacity(0.72)))
+                    .overlay(Capsule().stroke(theme.muted.opacity(0.18), lineWidth: 1))
+                    .allowsHitTesting(false)
+                }
+
+                VStack {
+                    HStack {
+                        Text("preview")
+                            .font(.wwav(9, weight: .medium, italic: true))
+                            .tracking(1.8)
+                            .foregroundStyle(theme.muted)
+                        Spacer()
+                    }
+                    Spacer()
+                }
+                .padding(12)
+                .allowsHitTesting(false)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { onPreviewTap() }
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .frame(maxWidth: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(theme.muted.opacity(0.20), lineWidth: 1)
+        )
     }
 }
 
@@ -1137,6 +2023,7 @@ struct RadioLiveFeedSheet: View {
     @EnvironmentObject var library: TrackLibrary
     @EnvironmentObject var player: StemPlayerEngine
     @EnvironmentObject var nav: AppNavigation
+    @EnvironmentObject var listener: LiveRadioListener
     @Environment(\.dismiss) private var dismiss
     @Environment(\.theme) private var theme
 
@@ -1144,10 +2031,21 @@ struct RadioLiveFeedSheet: View {
         NavigationStack {
             ZStack {
                 theme.pageRadial.ignoresSafeArea()
+                if !library.liveRadioSessions.isEmpty {
+                    LiveBroadcastBackdrop()
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text("live radio").wwavTitle(size: 36)
-                            .padding(.top, 8)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("live radio").wwavTitle(size: 36)
+                            if !library.liveRadioSessions.isEmpty {
+                                LiveBroadcastHeaderMeter()
+                                    .frame(height: 42)
+                            }
+                        }
+                        .padding(.top, 8)
 
                         if library.liveRadioSessions.isEmpty {
                             EmptyState(
@@ -1159,10 +2057,9 @@ struct RadioLiveFeedSheet: View {
                             VStack(spacing: 10) {
                                 ForEach(library.liveRadioSessions) { session in
                                     RadioLiveFeedRow(session: session) {
-                                        if let track = library.currentTrack(for: session) {
-                                            nav.openPost(track, in: library, with: player)
-                                            dismiss()
-                                        }
+                                        listener.tuneIn(sessionId: session.id)
+                                        nav.tuneIn(session: session)
+                                        dismiss()
                                     }
                                 }
                             }
@@ -1204,6 +2101,76 @@ struct RadioLiveFeedSheet: View {
     }
 }
 
+private struct LiveBroadcastBackdrop: View {
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            GeometryReader { geo in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                let barCount = 18
+                HStack(alignment: .center, spacing: 8) {
+                    ForEach(0..<barCount, id: \.self) { index in
+                        let phase = t * 2.4 + Double(index) * 0.42
+                        let height = 42 + (sin(phase) + 1) * 34
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(theme.accent.opacity(0.055))
+                            .frame(width: 5, height: height)
+                    }
+                }
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+                .padding(.top, 88)
+            }
+        }
+    }
+}
+
+private struct LiveBroadcastHeaderMeter: View {
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            HStack(alignment: .center, spacing: 5) {
+                ForEach(0..<28, id: \.self) { index in
+                    let phase = t * 3.2 + Double(index) * 0.36
+                    let height = 8 + (sin(phase) + 1) * 14
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(index.isMultiple(of: 3) ? theme.accent : theme.clayDeep.opacity(0.72))
+                        .frame(width: 4, height: height)
+                        .opacity(0.32 + (sin(phase + 0.8) + 1) * 0.22)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .background(RoundedRectangle(cornerRadius: 8).fill(theme.sand.opacity(0.48)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.muted.opacity(0.16), lineWidth: 1))
+        }
+    }
+}
+
+private struct LiveBroadcastRowPulse: View {
+    @State private var pulsing = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.red.opacity(0.34), lineWidth: 1.4)
+                .scaleEffect(pulsing ? 1.42 : 0.88)
+                .opacity(pulsing ? 0 : 0.9)
+            Circle()
+                .stroke(Color.red.opacity(0.20), lineWidth: 1)
+                .scaleEffect(pulsing ? 1.75 : 1.0)
+                .opacity(pulsing ? 0 : 0.7)
+        }
+        .onAppear {
+            withAnimation(.easeOut(duration: 1.05).repeatForever(autoreverses: false)) {
+                pulsing = true
+            }
+        }
+    }
+}
+
 private struct RadioLiveFeedRow: View {
     let session: RadioSession
     let onListen: () -> Void
@@ -1219,6 +2186,7 @@ private struct RadioLiveFeedRow: View {
         Button(action: onListen) {
             HStack(spacing: 12) {
                 ZStack {
+                    LiveBroadcastRowPulse()
                     Circle().fill(theme.accent)
                     Image(systemName: "dot.radiowaves.left.and.right")
                         .font(.system(size: 17, weight: .semibold))

@@ -47,14 +47,34 @@ final class MultitrackRecorderEngine: NSObject, ObservableObject {
     }
     /// The finalised single-take URL (available after finishSingle()).
     @Published private(set) var singleFinishedURL: URL?
+    /// Current shared multitrack playhead for previewing and punch-in recording.
+    @Published private(set) var playbackOffset: TimeInterval = 0
+    @Published private(set) var isPreviewPlaying: Bool = false
+    @Published private(set) var previewingLanes: Set<StemKind> = []
+    @Published private(set) var laneDurations: [StemKind: TimeInterval] = Dictionary(
+        uniqueKeysWithValues: StemKind.allCases.map { ($0, TimeInterval(0)) }
+    )
     /// Set when something goes wrong; displayed in the UI.
     @Published var errorMessage: String?
+
+    var formattedPlaybackOffset: String {
+        Self.formatTime(playbackOffset)
+    }
+
+    var formattedMaxDuration: String {
+        Self.formatTime(maxPlaybackDuration)
+    }
+
+    var maxPlaybackDuration: TimeInterval {
+        max(laneDurations.values.max() ?? 0, playbackOffset)
+    }
 
     // MARK: Internal bookkeeping
 
     private struct LaneContext {
         var recorder: AVAudioRecorder
         var url: URL
+        var recordStartOffset: TimeInterval = 0
         var tapInstalled: Bool = false
     }
 
@@ -62,10 +82,13 @@ final class MultitrackRecorderEngine: NSObject, ObservableObject {
     private var singleContext: LaneContext?
     private var activeLane: StemKind? = nil   // nil → single mode active
     private var isSingleMode: Bool = false
+    private var backingPlayers: [StemKind: AVAudioPlayer] = [:]
+    private var previewPlayers: [StemKind: AVAudioPlayer] = [:]
 
     private let engine = AVAudioEngine()
     private var engineRunning = false
     private var timer: Timer?
+    private var previewTimer: Timer?
 
     private static let kMaxPeaks = 256
     private static let kSampleRate: Double = 44_100
@@ -94,7 +117,7 @@ final class MultitrackRecorderEngine: NSObject, ObservableObject {
         try session.setCategory(
             .playAndRecord,
             mode: .default,
-            options: [.defaultToSpeaker, .allowBluetooth]
+            options: [.defaultToSpeaker, .allowBluetoothHFP]
         )
         try session.setActive(true)
     }
@@ -201,6 +224,131 @@ final class MultitrackRecorderEngine: NSObject, ObservableObject {
         timer = nil
     }
 
+    private func startPreviewTimer() {
+        stopPreviewTimer()
+        previewTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                let active = self.previewPlayers.filter { $0.value.isPlaying }
+                if active.isEmpty {
+                    self.stopPreview()
+                    return
+                }
+                self.previewingLanes = Set(active.keys)
+                self.playbackOffset = active.values.map(\.currentTime).max() ?? self.playbackOffset
+            }
+        }
+        if let t = previewTimer { RunLoop.main.add(t, forMode: .common) }
+    }
+
+    private func stopPreviewTimer() {
+        previewTimer?.invalidate()
+        previewTimer = nil
+    }
+
+    // MARK: Backing playback
+
+    private func startBackingPlayback(excluding recordingLane: StemKind, alignedTo offset: TimeInterval) {
+        stopBackingPlayback()
+        for kind in StemKind.allCases where kind != recordingLane {
+            guard let ctx = laneContexts[kind] else { continue }
+            let state = laneState[kind] ?? .idle
+            guard state == .paused || state == .done else { continue }
+            do {
+                let player = try AVAudioPlayer(contentsOf: ctx.url)
+                player.prepareToPlay()
+                player.volume = 0.88
+                player.currentTime = min(max(0, offset), player.duration)
+                if player.currentTime < player.duration {
+                    player.play()
+                    backingPlayers[kind] = player
+                }
+            } catch {
+                print("[RecorderEngine] backing playback failed for \(kind.rawValue): \(error)")
+            }
+        }
+    }
+
+    private func stopBackingPlayback() {
+        for player in backingPlayers.values {
+            player.stop()
+        }
+        backingPlayers = [:]
+    }
+
+    // MARK: Preview playback / scrub
+
+    func setPlaybackOffset(_ offset: TimeInterval) {
+        let upperBound = max(laneDurations.values.max() ?? 0, 0)
+        playbackOffset = min(max(0, offset), upperBound)
+        guard isPreviewPlaying else { return }
+        for player in previewPlayers.values {
+            player.currentTime = min(playbackOffset, player.duration)
+            if player.currentTime < player.duration, !player.isPlaying {
+                player.play()
+            }
+        }
+    }
+
+    func scrubPlayback(fraction: Double) {
+        let duration = laneDurations.values.max() ?? 0
+        guard duration > 0 else {
+            playbackOffset = 0
+            return
+        }
+        setPlaybackOffset(duration * min(max(0, fraction), 1))
+    }
+
+    func toggleLanePreview(_ kind: StemKind) {
+        if previewingLanes == Set([kind]), isPreviewPlaying {
+            stopPreview()
+        } else {
+            startPreview(kinds: [kind])
+        }
+    }
+
+    func toggleAllPreview() {
+        if isPreviewPlaying, previewingLanes.count > 1 {
+            stopPreview()
+        } else {
+            startPreview(kinds: StemKind.allCases)
+        }
+    }
+
+    private func startPreview(kinds: [StemKind]) {
+        guard activeLane == nil else { return }
+        stopPreview()
+        var players: [StemKind: AVAudioPlayer] = [:]
+        for kind in kinds {
+            guard let url = laneContexts[kind]?.url else { continue }
+            do {
+                let player = try AVAudioPlayer(contentsOf: url)
+                player.prepareToPlay()
+                player.currentTime = min(playbackOffset, player.duration)
+                guard player.currentTime < player.duration else { continue }
+                player.play()
+                players[kind] = player
+            } catch {
+                print("[RecorderEngine] preview failed for \(kind.rawValue): \(error)")
+            }
+        }
+        guard !players.isEmpty else { return }
+        previewPlayers = players
+        previewingLanes = Set(players.keys)
+        isPreviewPlaying = true
+        startPreviewTimer()
+    }
+
+    func stopPreview() {
+        for player in previewPlayers.values {
+            player.stop()
+        }
+        previewPlayers = [:]
+        previewingLanes = []
+        isPreviewPlaying = false
+        stopPreviewTimer()
+    }
+
     // MARK: – Public API
 
     /// Start or resume recording for `kind` lane (multitrack).
@@ -213,12 +361,14 @@ final class MultitrackRecorderEngine: NSObject, ObservableObject {
             }
             do {
                 try activateRecordSession()
+                stopPreview()
                 // Pause any other active lane first.
                 if let other = activeLane, other != kind {
                     pauseLane(other)
                 }
                 activeLane = kind
                 isSingleMode = false
+                let requestedOffset = playbackOffset
 
                 if let ctx = laneContexts[kind], laneState[kind] == .paused {
                     // Resume existing recorder — single contiguous file.
@@ -229,14 +379,21 @@ final class MultitrackRecorderEngine: NSObject, ObservableObject {
                     laneContexts[kind]?.recorder.stop()
                     let (rec, url) = try makeRecorder(label: kind.rawValue)
                     rec.record()
-                    laneContexts[kind] = LaneContext(recorder: rec, url: url)
+                    laneContexts[kind] = LaneContext(
+                        recorder: rec,
+                        url: url,
+                        recordStartOffset: requestedOffset
+                    )
                     peaks[kind] = []
                     laneState[kind] = .recording
                 }
 
+                let backingOffset = laneContexts[kind]?.recordStartOffset ?? requestedOffset
+
                 // Install AVAudioEngine tap for this lane.
                 removeTap()
                 installTap(for: kind)
+                startBackingPlayback(excluding: kind, alignedTo: backingOffset)
                 startTimer(for: kind)
                 errorMessage = nil
             } catch {
@@ -254,6 +411,7 @@ final class MultitrackRecorderEngine: NSObject, ObservableObject {
             activeLane = nil
             removeTap()
             stopTimer()
+            stopBackingPlayback()
         }
     }
 
@@ -272,21 +430,52 @@ final class MultitrackRecorderEngine: NSObject, ObservableObject {
     /// Finish and finalise a lane's recording. Returns the file URL.
     @discardableResult
     func finishLane(_ kind: StemKind) -> URL? {
-        guard laneContexts[kind] != nil else { return nil }
-        let url = laneContexts[kind]?.url
-        laneContexts[kind]?.recorder.stop()
+        guard var ctx = laneContexts[kind] else { return nil }
+        ctx.recorder.stop()
         if activeLane == kind {
             activeLane = nil
             removeTap()
             stopTimer()
+            stopBackingPlayback()
+        }
+        var finalURL = ctx.url
+        if ctx.recordStartOffset > 0.02,
+           let padded = try? Self.makePaddedCopy(of: ctx.url, leadIn: ctx.recordStartOffset) {
+            try? FileManager.default.removeItem(at: ctx.url)
+            finalURL = padded
+            ctx.url = padded
+            ctx.recordStartOffset = 0
+            laneContexts[kind] = ctx
         }
         laneState[kind] = .done
+        laneDurations[kind] = Self.audioDuration(url: finalURL)
         // Keep context so caller can retrieve URL via laneURL(for:)
-        return url
+        return finalURL
     }
 
     func laneURL(for kind: StemKind) -> URL? {
         laneContexts[kind]?.url
+    }
+
+    func discardLane(_ kind: StemKind) {
+        if activeLane == kind {
+            activeLane = nil
+            removeTap()
+            stopTimer()
+            stopBackingPlayback()
+        }
+        previewPlayers[kind]?.stop()
+        previewPlayers.removeValue(forKey: kind)
+        previewingLanes.remove(kind)
+        laneContexts[kind]?.recorder.stop()
+        if let url = laneContexts[kind]?.url {
+            try? FileManager.default.removeItem(at: url)
+        }
+        laneContexts[kind] = nil
+        laneState[kind] = .idle
+        laneDurations[kind] = 0
+        peaks[kind] = []
+        setPlaybackOffset(min(playbackOffset, laneDurations.values.max() ?? 0))
     }
 
     // MARK: Single-take API
@@ -301,6 +490,7 @@ final class MultitrackRecorderEngine: NSObject, ObservableObject {
             }
             do {
                 try activateRecordSession()
+                stopBackingPlayback()
                 isSingleMode = true
                 activeLane = nil
 
@@ -332,6 +522,7 @@ final class MultitrackRecorderEngine: NSObject, ObservableObject {
         singleState = .paused
         removeTap()
         stopTimer()
+        stopBackingPlayback()
     }
 
     func toggleSingle() {
@@ -354,6 +545,7 @@ final class MultitrackRecorderEngine: NSObject, ObservableObject {
         singleFinishedURL = url
         removeTap()
         stopTimer()
+        stopBackingPlayback()
         restorePlaybackSession()
         return url
     }
@@ -369,13 +561,17 @@ final class MultitrackRecorderEngine: NSObject, ObservableObject {
         singleFinishedURL = nil
         removeTap()
         stopTimer()
+        stopBackingPlayback()
     }
 
     // MARK: Cancel all
 
     func cancel() {
         stopTimer()
+        stopPreviewTimer()
         removeTap()
+        stopPreview()
+        stopBackingPlayback()
         for kind in StemKind.allCases {
             laneContexts[kind]?.recorder.stop()
             if let url = laneContexts[kind]?.url {
@@ -391,12 +587,71 @@ final class MultitrackRecorderEngine: NSObject, ObservableObject {
         for kind in StemKind.allCases {
             laneState[kind] = .idle
             peaks[kind] = []
+            laneDurations[kind] = 0
         }
         singleState = .idle
         singlePeaks = []
         singleFinishedURL = nil
         activeLane = nil
+        playbackOffset = 0
         restorePlaybackSession()
+    }
+
+    // MARK: File helpers
+
+    private static func audioDuration(url: URL) -> TimeInterval {
+        (try? AVAudioPlayer(contentsOf: url).duration) ?? 0
+    }
+
+    private static func makePaddedCopy(of url: URL, leadIn: TimeInterval) throws -> URL {
+        let input = try AVAudioFile(forReading: url)
+        let format = input.processingFormat
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wwav-padded-\(UUID().uuidString).wav")
+        let output = try AVAudioFile(forWriting: outputURL, settings: format.settings)
+        let chunkFrames: AVAudioFrameCount = 4096
+
+        var remainingSilence = AVAudioFramePosition((max(0, leadIn) * format.sampleRate).rounded())
+        while remainingSilence > 0 {
+            let frames = AVAudioFrameCount(min(AVAudioFramePosition(chunkFrames), remainingSilence))
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { break }
+            buffer.frameLength = frames
+            zero(buffer: buffer)
+            try output.write(from: buffer)
+            remainingSilence -= AVAudioFramePosition(frames)
+        }
+
+        while input.framePosition < input.length {
+            let frames = AVAudioFrameCount(min(AVAudioFramePosition(chunkFrames), input.length - input.framePosition))
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { break }
+            try input.read(into: buffer, frameCount: frames)
+            if buffer.frameLength > 0 {
+                try output.write(from: buffer)
+            }
+        }
+        return outputURL
+    }
+
+    private static func zero(buffer: AVAudioPCMBuffer) {
+        let frameCount = Int(buffer.frameLength)
+        if let channels = buffer.floatChannelData {
+            for ch in 0..<Int(buffer.format.channelCount) {
+                channels[ch].initialize(repeating: 0, count: frameCount)
+            }
+        } else if let channels = buffer.int16ChannelData {
+            for ch in 0..<Int(buffer.format.channelCount) {
+                channels[ch].initialize(repeating: 0, count: frameCount)
+            }
+        } else if let channels = buffer.int32ChannelData {
+            for ch in 0..<Int(buffer.format.channelCount) {
+                channels[ch].initialize(repeating: 0, count: frameCount)
+            }
+        }
+    }
+
+    private static func formatTime(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds.rounded()))
+        return String(format: "%d:%02d", s / 60, s % 60)
     }
 }
 
@@ -586,76 +841,8 @@ struct RecordNowSheet: View {
             .frame(maxWidth: .infinity)
             .frame(height: 260)
 
-            // Focused lane label + record button
-            VStack(alignment: .leading, spacing: 10) {
-                Text("lane: \(focusedLane.label)")
-                    .font(.wwav(11, weight: .light)).tracking(2)
-                    .foregroundStyle(theme.muted)
-
-                RecordPillButton(
-                    state: engine.laneState[focusedLane] ?? .idle,
-                    elapsed: engine.formattedElapsed,
-                    onTap: {
-                        let st = engine.laneState[focusedLane] ?? .idle
-                        if st == .recording {
-                            engine.pauseLane(focusedLane)
-                        } else {
-                            engine.startLane(focusedLane)
-                        }
-                    },
-                    onHoldStart: {
-                        let st = engine.laneState[focusedLane] ?? .idle
-                        guard st != .recording else { return }
-                        engine.startLane(focusedLane)
-                    },
-                    onHoldEnd: {
-                        engine.pauseLane(focusedLane)
-                    }
-                )
-
-                // Done / discard for focused lane
-                let laneIsActive = (engine.laneState[focusedLane] == .recording || engine.laneState[focusedLane] == .paused)
-                let laneHasTake = laneDoneURLs[focusedLane] != nil
-                HStack(spacing: 10) {
-                    if laneIsActive {
-                        Button {
-                            if let url = engine.finishLane(focusedLane) {
-                                laneDoneURLs[focusedLane] = url
-                            }
-                        } label: {
-                            donePillLabel("done: \(focusedLane.label)")
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    if laneHasTake {
-                        Button {
-                            laneDoneURLs.removeValue(forKey: focusedLane)
-                            // Reset lane so user can re-record
-                            // The engine discards via startLane fresh on next record.
-                        } label: {
-                            Text("redo")
-                                .font(.wwav(12, weight: .light, italic: true))
-                                .tracking(1.2)
-                                .foregroundStyle(theme.muted)
-                                .padding(.horizontal, 14).padding(.vertical, 10)
-                                .background(Capsule().fill(theme.muted.opacity(0.12)))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-
-            // Lane status list
-            VStack(spacing: 0) {
-                ForEach(StemKind.allCases) { kind in
-                    laneStatusRow(kind)
-                    if kind != StemKind.allCases.last {
-                        Rectangle().fill(theme.muted.opacity(0.14)).frame(height: 1).padding(.leading, 52)
-                    }
-                }
-            }
-            .background(sheetBoxBg)
-            .overlay(sheetBoxStroke)
+            multitrackTimeline
+            laneControlGrid
 
             // Use multitrack button
             Button {
@@ -677,6 +864,132 @@ struct RecordNowSheet: View {
             .disabled(!multitrackComplete)
             .opacity(multitrackComplete ? 1 : 0.45)
         }
+    }
+
+    private var multitrackTimeline: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Button {
+                    engine.toggleAllPreview()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: engine.isPreviewPlaying && engine.previewingLanes.count > 1 ? "pause.fill" : "play.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("play tracks")
+                            .font(.wwav(11, weight: .medium, italic: true))
+                            .tracking(1.2)
+                    }
+                    .foregroundStyle(engine.maxPlaybackDuration > 0 ? theme.glow : theme.muted)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Capsule().fill(engine.maxPlaybackDuration > 0 ? theme.accent : theme.muted.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+                .disabled(engine.maxPlaybackDuration <= 0)
+
+                Spacer(minLength: 0)
+
+                Text("\(engine.formattedPlaybackOffset) / \(engine.formattedMaxDuration)")
+                    .font(.wwav(10, weight: .light))
+                    .tracking(1)
+                    .monospacedDigit()
+                    .foregroundStyle(theme.muted)
+            }
+
+            GeometryReader { geo in
+                let duration = max(engine.maxPlaybackDuration, 0.001)
+                let fraction = min(max(engine.playbackOffset / duration, 0), 1)
+                let x = geo.size.width * fraction
+
+                ZStack(alignment: .leading) {
+                    Capsule().fill(theme.muted.opacity(0.18)).frame(height: 5)
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [theme.accent, theme.clayDeep],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: max(0, x), height: 5)
+                    Circle()
+                        .fill(theme.glow)
+                        .frame(width: 16, height: 16)
+                        .shadow(color: theme.accent.opacity(0.30), radius: 8, y: 2)
+                        .offset(x: min(max(0, x - 8), max(0, geo.size.width - 16)))
+                }
+                .frame(height: 22)
+                .contentShape(Rectangle().inset(by: -10))
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            let newFraction = max(0, min(1, value.location.x / max(1, geo.size.width)))
+                            engine.scrubPlayback(fraction: newFraction)
+                        }
+                )
+            }
+            .frame(height: 22)
+            .opacity(engine.maxPlaybackDuration > 0 ? 1 : 0.45)
+        }
+        .padding(12)
+        .background(sheetBoxBg)
+        .overlay(sheetBoxStroke)
+    }
+
+    private var laneControlGrid: some View {
+        HStack(spacing: 8) {
+            ForEach(StemKind.allCases) { kind in
+                let state = engine.laneState[kind] ?? .idle
+                LaneRecordPad(
+                    kind: kind,
+                    state: state,
+                    hasTake: laneDoneURLs[kind] != nil,
+                    isFocused: focusedLane == kind,
+                    isPreviewing: engine.previewingLanes.contains(kind),
+                    elapsed: state == .recording ? engine.formattedElapsed : stateLabel(state, hasTake: laneDoneURLs[kind] != nil, kind: kind),
+                    onTap: { tapLane(kind) },
+                    onHoldStart: { holdStartLane(kind) },
+                    onHoldEnd: { finishLane(kind) },
+                    onDone: { finishLane(kind) },
+                    onRedo: { redoLane(kind) }
+                )
+            }
+        }
+    }
+
+    private func tapLane(_ kind: StemKind) {
+        focusedLane = kind
+        let state = engine.laneState[kind] ?? .idle
+        guard state != .recording else { return }
+        engine.toggleLanePreview(kind)
+    }
+
+    private func holdStartLane(_ kind: StemKind) {
+        focusedLane = kind
+        let state = engine.laneState[kind] ?? .idle
+        guard state != .recording else { return }
+        beginLaneRecording(kind)
+    }
+
+    private func beginLaneRecording(_ kind: StemKind) {
+        if laneDoneURLs[kind] != nil || engine.laneState[kind] == .done {
+            laneDoneURLs.removeValue(forKey: kind)
+            engine.discardLane(kind)
+        }
+        engine.startLane(kind)
+    }
+
+    private func finishLane(_ kind: StemKind) {
+        focusedLane = kind
+        if let url = engine.finishLane(kind) {
+            laneDoneURLs[kind] = url
+        }
+    }
+
+    private func redoLane(_ kind: StemKind) {
+        focusedLane = kind
+        laneDoneURLs.removeValue(forKey: kind)
+        engine.discardLane(kind)
     }
 
     // MARK: Lane status row
@@ -781,6 +1094,170 @@ struct RecordNowSheet: View {
         .padding(12)
         .background(sheetBoxBg)
         .overlay(sheetBoxStroke)
+    }
+}
+
+// MARK: – LaneRecordPad
+
+private struct LaneRecordPad: View {
+    let kind: StemKind
+    let state: RecordLaneState
+    let hasTake: Bool
+    let isFocused: Bool
+    let isPreviewing: Bool
+    let elapsed: String
+    let onTap: () -> Void
+    let onHoldStart: () -> Void
+    let onHoldEnd: () -> Void
+    let onDone: () -> Void
+    let onRedo: () -> Void
+
+    @State private var holdActive = false
+    @Environment(\.theme) private var theme
+
+    private var isRecording: Bool { state == .recording }
+    private var canFinish: Bool { state == .recording || state == .paused }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Text(kind.label)
+                .font(.wwav(10, weight: isFocused ? .medium : .light))
+                .tracking(1.2)
+                .foregroundStyle(isFocused ? theme.accent : theme.muted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+
+            recordControl
+
+            Text(statusText)
+                .font(.wwav(9, weight: .light))
+                .tracking(0.8)
+                .foregroundStyle(isRecording ? theme.glow : theme.muted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .monospacedDigit()
+
+            laneAction
+                .frame(height: 28)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(isFocused ? theme.clay.opacity(0.18) : theme.sand.opacity(0.62))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(
+                    isRecording ? Color.red.opacity(0.55) :
+                    (isPreviewing ? theme.accent.opacity(0.58) :
+                     (isFocused ? theme.accent.opacity(0.42) : theme.muted.opacity(0.18))),
+                    lineWidth: 1
+                )
+        )
+        .animation(.easeInOut(duration: 0.18), value: state)
+        .animation(.easeInOut(duration: 0.18), value: hasTake)
+        .animation(.easeInOut(duration: 0.18), value: isFocused)
+    }
+
+    private var recordControl: some View {
+        ZStack {
+            Circle()
+                .fill(
+                    isRecording
+                        ? AnyShapeStyle(Color.red.opacity(0.82))
+                        : isPreviewing
+                            ? AnyShapeStyle(theme.clayDeep)
+                            : hasTake
+                            ? AnyShapeStyle(theme.accent)
+                            : AnyShapeStyle(theme.muted.opacity(0.16))
+                )
+                .frame(width: 54, height: 54)
+                .shadow(color: isRecording ? Color.red.opacity(0.35) : .clear, radius: 12, y: 4)
+
+            Image(systemName: iconName)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(isRecording || hasTake || isPreviewing ? theme.glow : theme.ink)
+        }
+        .contentShape(Circle())
+        .gesture(
+            LongPressGesture(minimumDuration: 0.18)
+                .sequenced(before: DragGesture(minimumDistance: 0))
+                .onChanged { value in
+                    switch value {
+                    case .first(true):
+                        if !holdActive {
+                            holdActive = true
+                            onHoldStart()
+                        }
+                    default:
+                        break
+                    }
+                }
+                .onEnded { _ in
+                    if holdActive {
+                        holdActive = false
+                        onHoldEnd()
+                    }
+                }
+        )
+        .simultaneousGesture(
+            TapGesture()
+                .onEnded {
+                    guard !holdActive else { return }
+                    onTap()
+                }
+        )
+    }
+
+    @ViewBuilder
+    private var laneAction: some View {
+        if canFinish {
+            Button(action: onDone) {
+                Text("done")
+                    .font(.wwav(10, weight: .medium, italic: true))
+                    .tracking(1)
+                    .foregroundStyle(theme.glow)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(theme.accent))
+            }
+            .buttonStyle(.plain)
+        } else if hasTake {
+            Button(action: onRedo) {
+                Text("redo")
+                    .font(.wwav(10, weight: .medium, italic: true))
+                    .tracking(1)
+                    .foregroundStyle(theme.muted)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(theme.muted.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
+        } else {
+            Color.clear
+        }
+    }
+
+    private var iconName: String {
+        if isRecording { return "pause.fill" }
+        if isPreviewing { return "pause.fill" }
+        if hasTake { return "play.fill" }
+        if state == .paused { return "play.fill" }
+        return "record.circle"
+    }
+
+    private var statusText: String {
+        if isRecording { return elapsed }
+        if isPreviewing { return "playing" }
+        if hasTake { return "done" }
+        switch state {
+        case .idle: return "hold rec"
+        case .paused: return "paused"
+        case .done: return "again"
+        case .recording: return elapsed
+        }
     }
 }
 

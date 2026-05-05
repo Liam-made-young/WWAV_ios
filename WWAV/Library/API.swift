@@ -112,6 +112,7 @@ struct URLSessionWWAVAPIClient: WWAVAPIClient {
     var environment: AppEnvironment
     var session: URLSession = .shared
     var decoder: JSONDecoder = JSONDecoder()
+    private static let feedPageLimit = 48
 
     func request(_ path: String, method: String = "GET", body: [String: Any]? = nil, token: String? = nil) async throws -> Data {
         guard let url = URL(string: "\(environment.apiBaseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")))\(path)") else {
@@ -173,36 +174,39 @@ struct URLSessionWWAVAPIClient: WWAVAPIClient {
             let browse = try await browseUploads(token: token)
             if !browse.isEmpty {
                 let mine = (try? await userUploads(token: token)) ?? []
-                return mergeUploads(primary: browse, additions: mine)
+                return limited(mergeUploads(primary: mine, additions: browse))
             }
         } catch {
             print("[API] browse feed unavailable for uploads: \(error)")
         }
-        return try await getFirstList(WWAVRemoteUpload.self, paths: [
-            "/api/uploads",
-            "/api/feed/uploads",
-            "/api/public/uploads",
-            "/api/social/uploads",
-            "/api/user/uploads/all",
+        return limited(try await getFirstList(WWAVRemoteUpload.self, paths: [
+            Self.limitedPath("/api/uploads"),
+            Self.limitedPath("/api/feed/uploads"),
+            Self.limitedPath("/api/public/uploads"),
+            Self.limitedPath("/api/social/uploads"),
+            Self.limitedPath("/api/user/uploads/all"),
         ], token: token)
+        )
     }
 
     func globalPosts(token: String) async throws -> [WWAVRemotePost] {
-        try await getFirstList(WWAVRemotePost.self, paths: [
-            "/api/posts",
-            "/api/feed/posts",
-            "/api/public/posts",
-            "/api/social/posts",
-            "/api/user/posts/all",
+        let global = try await getFirstList(WWAVRemotePost.self, paths: [
+            Self.limitedPath("/api/posts"),
+            Self.limitedPath("/api/feed/posts"),
+            Self.limitedPath("/api/public/posts"),
+            Self.limitedPath("/api/social/posts"),
+            Self.limitedPath("/api/user/posts/all"),
         ], token: token)
+        let mine = (try? await userPosts(token: token)) ?? []
+        return limited(mergePosts(primary: mine, additions: global))
     }
 
     func userUploads(token: String) async throws -> [WWAVRemoteUpload] {
-        try await get([WWAVRemoteUpload].self, path: "/api/user/uploads", token: token)
+        limited(try await get([WWAVRemoteUpload].self, path: Self.limitedPath("/api/user/uploads"), token: token))
     }
 
     func userPosts(token: String) async throws -> [WWAVRemotePost] {
-        try await get([WWAVRemotePost].self, path: "/api/user/posts", token: token)
+        limited(try await get([WWAVRemotePost].self, path: Self.limitedPath("/api/user/posts"), token: token))
     }
 
     private static func decodeErrorMessage(_ data: Data) -> String? {
@@ -243,13 +247,13 @@ struct URLSessionWWAVAPIClient: WWAVAPIClient {
     }
 
     private func browseUploads(token: String) async throws -> [WWAVRemoteUpload] {
-        let data = try await request("/api/browse?blend=0.42&limit=200", token: token)
+        let data = try await request("/api/browse?blend=0.42&limit=\(Self.feedPageLimit)", token: token)
         let decoder = JSONDecoder()
         if let envelope = try? decoder.decode(APIListEnvelope<WWAVBrowseFeedItem>.self, from: data) {
-            return envelope.values.compactMap(\.upload)
+            return limited(envelope.values.compactMap(\.upload))
         }
         let items = try decoder.decode([WWAVBrowseFeedItem].self, from: data)
-        return items.compactMap(\.upload)
+        return limited(items.compactMap(\.upload))
     }
 
     private func mergeUploads(
@@ -262,6 +266,26 @@ struct URLSessionWWAVAPIClient: WWAVAPIClient {
             merged.append(upload)
         }
         return merged
+    }
+
+    private func mergePosts(
+        primary: [WWAVRemotePost],
+        additions: [WWAVRemotePost]
+    ) -> [WWAVRemotePost] {
+        var seen = Set(primary.map(\.id))
+        var merged = primary
+        for post in additions where seen.insert(post.id).inserted {
+            merged.append(post)
+        }
+        return merged
+    }
+
+    private func limited<T>(_ items: [T]) -> [T] {
+        Array(items.prefix(Self.feedPageLimit))
+    }
+
+    private static func limitedPath(_ path: String) -> String {
+        path.contains("?") ? "\(path)&limit=\(feedPageLimit)" : "\(path)?limit=\(feedPageLimit)"
     }
 }
 

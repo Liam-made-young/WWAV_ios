@@ -41,7 +41,7 @@ struct ProfileAvatar: View {
             .fill(
                 RadialGradient(
                     colors: [theme.sand, theme.clay, theme.clayDeep],
-                    center: UnitPoint(x: 0.35, y: 0.30),
+                    center: WWAVLight.sun,
                     startRadius: 4, endRadius: size * 0.95
                 )
             )

@@ -13,6 +13,7 @@ struct CommentsThread: View {
     let track: Track
 
     @EnvironmentObject var auth: AuthManager
+    @EnvironmentObject var library: TrackLibrary
     @Environment(\.theme) private var theme
 
     @State private var comments: [WWAVComment] = []
@@ -61,7 +62,7 @@ struct CommentsThread: View {
     // MARK: – Composer
 
     private var composer: some View {
-        let repliesReady = !commentEndpoints.isEmpty
+        let repliesReady = canReply
         return VStack(alignment: .leading, spacing: 6) {
             if let target = replyingTo {
                 HStack(spacing: 6) {
@@ -249,16 +250,20 @@ struct CommentsThread: View {
     }
 
     private var commentTaskID: String {
-        "\(track.kind.rawValue)-\(track.userUploadId ?? -1)-\(track.publishedTrackId ?? -1)-\(track.remotePostId ?? -1)"
+        "\(track.kind.rawValue)-\(track.id)-\(track.userUploadId ?? -1)-\(track.publishedTrackId ?? -1)-\(track.remotePostId ?? -1)-\(track.comments)"
+    }
+
+    private var canReply: Bool {
+        auth.token != nil || track.kind == .text || track.remotePostId == nil
     }
 
     private func replyPrompt(repliesReady: Bool) -> String {
-        guard repliesReady else { return "syncing replies…" }
+        guard repliesReady else { return "sign in to reply" }
         return replyingTo == nil ? "post your reply" : "tweet your reply…"
     }
 
     private var emptyMessage: String {
-        guard !commentEndpoints.isEmpty else { return "replies available after sync." }
+        guard !commentEndpoints.isEmpty || canReply else { return "sign in to reply." }
         return repliesUnavailable ? "no replies loaded yet — try replying." : "no replies yet — be first."
     }
 
@@ -281,6 +286,7 @@ struct CommentsThread: View {
     private func loadComments() async {
         let endpoints = commentEndpoints
         guard !endpoints.isEmpty else {
+            comments = library.comments(for: track)
             loading = false
             repliesUnavailable = false
             return
@@ -293,7 +299,9 @@ struct CommentsThread: View {
                 let data = try await API.get(endpoint.commentsPath, token: auth.token)
                 let decoded = try Self.decodeCommentList(data)
                 resolvedEndpoint = endpoint
-                comments = decoded
+                comments = decoded + library.comments(for: track).filter { local in
+                    !decoded.contains(where: { $0.id == local.id })
+                }
                 return
             } catch {
                 print("[CommentsThread] load failed for \(endpoint.label): \(error)")
@@ -304,9 +312,16 @@ struct CommentsThread: View {
 
     @MainActor
     private func submit() async {
+        if auth.token == nil || commentEndpoints.isEmpty {
+            submitLocal()
+            return
+        }
         guard let token = auth.token else { return }
         let endpoints = resolvedEndpoint.map { [$0] } ?? commentEndpoints
-        guard !endpoints.isEmpty else { return }
+        guard !endpoints.isEmpty else {
+            submitLocal()
+            return
+        }
         let trimmed = draft.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
         posting = true
@@ -337,6 +352,23 @@ struct CommentsThread: View {
                 }
             }
         }
+        submitLocal()
+    }
+
+    @MainActor
+    private func submitLocal() {
+        let trimmed = draft.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        let comment = library.addLocalComment(
+            text: trimmed,
+            parentId: replyingTo?.id,
+            to: track,
+            author: auth.user
+        )
+        comments.append(comment)
+        repliesUnavailable = false
+        draft = ""
+        replyingTo = nil
     }
 
     private static func decodeCommentList(_ data: Data) throws -> [WWAVComment] {

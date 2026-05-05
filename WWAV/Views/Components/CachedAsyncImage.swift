@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import ImageIO
 
 /// `AsyncImage`-style view backed by a shared in-memory cache so covers
 /// don't re-fetch every time a feed cell scrolls back into view. The
@@ -61,8 +62,10 @@ struct CachedAsyncImage<Placeholder: View>: View {
         // 2. Network / disk-cache fetch via URLSession (URLCache picks up).
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
-            guard let decoded = UIImage(data: data) else { return }
+            try Task.checkCancellation()
+            guard let decoded = ImageCache.decodedImage(from: data) else { return }
             ImageCache.shared.set(decoded, for: url)
+            try Task.checkCancellation()
             await MainActor.run {
                 if self.generation == token {
                     self.image = decoded
@@ -82,9 +85,11 @@ struct CachedAsyncImage<Placeholder: View>: View {
 final class ImageCache {
     static let shared = ImageCache()
     private let store = NSCache<NSURL, UIImage>()
+    private static let maxPixelSize: CGFloat = 1_200
 
     private init() {
-        store.countLimit = 400
+        store.countLimit = 90
+        store.totalCostLimit = 72 * 1_024 * 1_024
     }
 
     func image(for url: URL) -> UIImage? {
@@ -92,6 +97,33 @@ final class ImageCache {
     }
 
     func set(_ image: UIImage, for url: URL) {
-        store.setObject(image, forKey: url as NSURL)
+        store.setObject(image, forKey: url as NSURL, cost: Self.cost(of: image))
+    }
+
+    static func decodedImage(from data: Data) -> UIImage? {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, options) else {
+            return UIImage(data: data)
+        }
+
+        let thumbnailOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ] as CFDictionary
+
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else {
+            return UIImage(data: data)
+        }
+        return UIImage(cgImage: image)
+    }
+
+    private static func cost(of image: UIImage) -> Int {
+        if let cgImage = image.cgImage {
+            return cgImage.bytesPerRow * cgImage.height
+        }
+        let pixels = image.size.width * image.size.height * image.scale * image.scale
+        return max(1, Int(pixels * 4))
     }
 }

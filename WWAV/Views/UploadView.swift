@@ -1,9 +1,24 @@
 import AVFoundation
 import PhotosUI
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
-private let uploadComposerKinds: [PostKind] = [.music, .radio, .image, .text, .video]
+private struct UploadTypeCardSpec: Identifiable {
+    let kind: PostKind
+    let title: String
+    let subtitle: String
+    let icon: String
+
+    var id: PostKind { kind }
+}
+
+private let uploadTypeCards: [UploadTypeCardSpec] = [
+    .init(kind: .music, title: "Track", subtitle: "single audio file", icon: "play.circle"),
+    .init(kind: .video, title: "Video", subtitle: "clips & reels", icon: "video.fill"),
+    .init(kind: .text, title: "Text post", subtitle: "words & image carousels", icon: "text.alignleft"),
+    .init(kind: .radio, title: "Radio", subtitle: "live queue", icon: "dot.radiowaves.left.and.right")
+]
 
 struct UploadView: View {
     @EnvironmentObject var library: TrackLibrary
@@ -12,29 +27,25 @@ struct UploadView: View {
     @EnvironmentObject var auth: AuthManager
     @Environment(\.theme) private var theme
 
-    @State private var selectedKind: PostKind = .music
+    @State private var selectedKind: PostKind?
 
     var body: some View {
         ZStack {
-            theme.centerRadial.ignoresSafeArea()
-            VStack(spacing: 0) {
-                kindPicker
-                    .padding(.horizontal, 24)
-                    .padding(.top, 14)
-                    .padding(.bottom, 8)
-
-                Group {
-                    switch selectedKind {
-                    case .music: MusicUploadForm()
-                    case .album: AlbumUploadForm()
-                    case .radio: RadioUploadForm()
-                    case .image: ImageUploadForm()
-                    case .text: TextUploadForm()
-                    case .video: VideoUploadForm()
+            theme.pageRadial.ignoresSafeArea()
+            Group {
+                if let selectedKind {
+                    composer(for: selectedKind)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                } else {
+                    UploadTypePicker { kind in
+                        withAnimation(.easeInOut(duration: 0.22)) {
+                            selectedKind = kind
+                        }
                     }
+                    .transition(.move(edge: .leading).combined(with: .opacity))
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear { consumeRequestedKind(animated: false) }
         .onChange(of: nav.requestedUploadKind) { _, _ in
@@ -42,48 +53,123 @@ struct UploadView: View {
         }
     }
 
-    private var kindPicker: some View {
-        HStack(spacing: 6) {
-            ForEach(uploadComposerKinds) { kind in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.18)) { selectedKind = kind }
-                } label: {
-                    let active = selectedKind == kind
-                    Text(kind.label)
-                        .font(.wwav(12, weight: active ? .medium : .light, italic: true))
-                        .tracking(1.5)
-                        .foregroundStyle(active ? theme.glow : theme.muted)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(
-                            Capsule().fill(
-                                active
-                                    ? AnyShapeStyle(
-                                        LinearGradient(
-                                            colors: [theme.clay, theme.clayDeep],
-                                            startPoint: .top, endPoint: .bottom))
-                                    : AnyShapeStyle(theme.muted.opacity(0.10))
-                            )
-                        )
-                        .overlay(
-                            Capsule().stroke(theme.muted.opacity(active ? 0 : 0.25), lineWidth: 1)
-                        )
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.plain)
-            }
+    @ViewBuilder
+    private func composer(for kind: PostKind) -> some View {
+        switch kind {
+        case .music: MusicUploadForm(onBack: returnToTypePicker)
+        case .album: AlbumUploadForm(onBack: returnToTypePicker)
+        case .radio: RadioUploadForm(onBack: returnToTypePicker)
+        case .image: ImageUploadForm()
+        case .text: TextUploadForm(onBack: returnToTypePicker)
+        case .video: VideoUploadForm(onBack: returnToTypePicker)
         }
     }
 
     private func consumeRequestedKind(animated: Bool) {
         guard let requested = nav.requestedUploadKind else { return }
-        let target: PostKind = requested == .album ? .music : requested
+        let target: PostKind = requested
         if animated {
-            withAnimation(.easeInOut(duration: 0.18)) { selectedKind = target }
+            withAnimation(.easeInOut(duration: 0.22)) { selectedKind = target }
         } else {
             selectedKind = target
         }
         nav.requestedUploadKind = nil
+    }
+
+    private func returnToTypePicker() {
+        withAnimation(.easeInOut(duration: 0.22)) {
+            selectedKind = nil
+        }
+    }
+}
+
+private struct UploadTypePicker: View {
+    let onSelect: (PostKind) -> Void
+
+    var body: some View {
+        GeometryReader { geo in
+            let margin: CGFloat = 22
+            let spacing: CGFloat = 16
+            let widthFit = (geo.size.width - margin * 2 - spacing) / 2
+            let heightFit = (geo.size.height - margin * 2 - spacing) / 2
+            let diameter = max(132, min(240, min(widthFit, heightFit)))
+            let columns = [
+                GridItem(.fixed(diameter), spacing: spacing),
+                GridItem(.fixed(diameter), spacing: spacing)
+            ]
+
+            LazyVGrid(columns: columns, spacing: spacing) {
+                ForEach(uploadTypeCards) { card in
+                    UploadTypeCircleButton(card: card, diameter: diameter) {
+                        onSelect(card.kind)
+                    }
+                }
+            }
+            .frame(width: diameter * 2 + spacing, height: diameter * 2 + spacing)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .padding(margin)
+        }
+    }
+}
+
+private struct UploadTypeCircleButton: View {
+    let card: UploadTypeCardSpec
+    let diameter: CGFloat
+    let action: () -> Void
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                theme.glow.opacity(0.86),
+                                theme.sand.opacity(0.96),
+                                theme.clay.opacity(0.76),
+                                theme.clayDeep.opacity(0.94),
+                            ],
+                            center: WWAVLight.sun,
+                            startRadius: 2,
+                            endRadius: diameter * 0.78
+                        )
+                    )
+                Circle()
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                theme.glow.opacity(0.62),
+                                theme.muted.opacity(0.24),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [theme.glow.opacity(0.28), .clear],
+                            center: UnitPoint(x: 0.34, y: 0.24),
+                            startRadius: 0,
+                            endRadius: diameter * 0.44
+                        )
+                    )
+                    .padding(diameter * 0.12)
+                Image(systemName: card.icon)
+                    .symbolRenderingMode(.hierarchical)
+                    .font(.system(size: diameter * 0.25, weight: .light))
+                    .foregroundStyle(theme.glow)
+                    .shadow(color: theme.clayDeep.opacity(0.34), radius: 8, y: 4)
+            }
+            .frame(width: diameter, height: diameter)
+            .contentShape(Circle())
+            .wwavShadow(.md)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(card.title)
+        .accessibilityHint(card.subtitle)
     }
 }
 
@@ -162,11 +248,41 @@ private struct BigCirclePickerScaffold<P: View>: View {
     let kicker: String
     let title: String
     let subtitle: String
+    let onBack: (() -> Void)?
     @ViewBuilder var picker: () -> P
     @Environment(\.theme) private var theme
 
+    init(
+        kicker: String,
+        title: String,
+        subtitle: String,
+        onBack: (() -> Void)? = nil,
+        @ViewBuilder picker: @escaping () -> P
+    ) {
+        self.kicker = kicker
+        self.title = title
+        self.subtitle = subtitle
+        self.onBack = onBack
+        self.picker = picker
+    }
+
     var body: some View {
         VStack(spacing: 32) {
+            if let onBack {
+                HStack {
+                    Button {
+                        onBack()
+                    } label: {
+                        Text("← back")
+                            .font(.wwav(12, weight: .light, italic: true))
+                            .tracking(1.5)
+                            .foregroundStyle(theme.muted)
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                }
+                .padding(.top, 12)
+            }
             Spacer()
             Text(kicker).wwavLabel(size: 11, tracking: 2.5)
             picker()
@@ -193,17 +309,19 @@ private let audioTypes: [UTType] = {
 }()
 
 private struct MusicUploadForm: View {
+    let onBack: (() -> Void)?
+
     @EnvironmentObject var library: TrackLibrary
     @EnvironmentObject var nav: AppNavigation
     @EnvironmentObject var player: StemPlayerEngine
     @EnvironmentObject var auth: AuthManager
     @Environment(\.theme) private var theme
 
-    @State private var entryPickerOpen: Bool = false
     @State private var pickerOpen: Bool = false
     @State private var recorderOpen: Bool = false
     @State private var pickedFile: PickedFile?
     @State private var multitrackDraft: MultitrackDraft?
+    @State private var sourceError: String?
     @State private var title: String = ""
     @State private var bio: String = ""
     @State private var inFlightID: UUID?
@@ -218,35 +336,16 @@ private struct MusicUploadForm: View {
     @State private var albumCoverImage: UIImage?
     @State private var albumCoverData: Data?
 
+    init(onBack: (() -> Void)? = nil) {
+        self.onBack = onBack
+    }
+
     private var hasSource: Bool {
         pickedFile != nil || multitrackDraft != nil
     }
 
     var body: some View {
-        Group {
-            if !hasSource {
-                BigCircleEntry(
-                    title: "drop a track. start a wave.",
-                    subtitle: "files · single recording · multitrack",
-                    kicker: "upload a wav"
-                ) {
-                    entryPickerOpen = true
-                }
-            } else {
-                ScrollView { filled.padding(.bottom, 16) }
-            }
-        }
-        .confirmationDialog(
-            "add a track",
-            isPresented: $entryPickerOpen,
-            titleVisibility: .visible
-        ) {
-            Button("look in files") { pickerOpen = true }
-            Button("record now") { recorderOpen = true }
-            Button("cancel", role: .cancel) {}
-        } message: {
-            Text("choose an audio file or record inside WWAV.")
-        }
+        ScrollView { filled.padding(.bottom, 16) }
         .fileImporter(
             isPresented: $pickerOpen,
             allowedContentTypes: audioTypes,
@@ -255,20 +354,33 @@ private struct MusicUploadForm: View {
             if case .success(let urls) = result, let url = urls.first {
                 pickedFile = PickedFile(url: url)
                 multitrackDraft = nil
+                sourceError = nil
                 if title.isEmpty { title = url.deletingPathExtension().lastPathComponent }
             }
         }
         .sheet(isPresented: $recorderOpen) {
             RecordNowSheet(
                 onSingleRecording: { url in
-                    pickedFile = PickedFile(url: url)
-                    multitrackDraft = nil
-                    if title.isEmpty { title = "recorded take" }
+                    do {
+                        let stableURL = try RecordingDraftStore.copySingle(url)
+                        pickedFile = PickedFile(url: stableURL)
+                        multitrackDraft = nil
+                        sourceError = nil
+                        if title.isEmpty { title = "recorded take" }
+                    } catch {
+                        sourceError = "couldn't keep that recording: \(error.localizedDescription)"
+                    }
                 },
                 onMultitrackRecording: { stems in
-                    multitrackDraft = MultitrackDraft(stemURLs: stems)
-                    pickedFile = nil
-                    if title.isEmpty { title = "multitrack take" }
+                    do {
+                        let stableStems = try RecordingDraftStore.copyStems(stems)
+                        multitrackDraft = MultitrackDraft(stemURLs: stableStems)
+                        pickedFile = nil
+                        sourceError = nil
+                        if title.isEmpty { title = "multitrack take" }
+                    } catch {
+                        sourceError = "couldn't keep those stems: \(error.localizedDescription)"
+                    }
                 }
             )
         }
@@ -279,25 +391,24 @@ private struct MusicUploadForm: View {
             HStack {
                 Button {
                     cancel()
+                    onBack?()
                 } label: {
-                    Text("← cancel")
+                    Text("← back")
                         .font(.wwav(12, weight: .light, italic: true))
                         .tracking(1.5).foregroundStyle(theme.muted)
                 }
                 .buttonStyle(.plain)
                 Spacer()
-                Text("new track").wwavLabel(size: 11, tracking: 2.5)
+                Text("track").wwavLabel(size: 11, tracking: 3)
             }
             .padding(.top, 4)
 
             Text("new track").wwavTitle(size: 40)
 
-            UploadField(label: "cover art") {
-                CoverPickerRow(
-                    coverItem: $coverItem,
-                    coverImage: $coverImage,
-                    coverData: $coverData
-                )
+            trackDropZone
+
+            UploadField(label: sourceLabel) {
+                sourceRow
             }
 
             UploadField(label: "song title") {
@@ -321,8 +432,14 @@ private struct MusicUploadForm: View {
                     .overlay(boxStroke)
             }
 
-            UploadField(label: sourceLabel) {
-                sourceRow
+            if hasSource {
+                UploadField(label: "cover art") {
+                    CoverPickerRow(
+                        coverItem: $coverItem,
+                        coverImage: $coverImage,
+                        coverData: $coverData
+                    )
+                }
             }
 
             albumToggle
@@ -330,24 +447,34 @@ private struct MusicUploadForm: View {
 
             statusRow
             Spacer(minLength: 8)
-            uploadButton
+            submissionButtons
         }
         .padding(.horizontal, 28).padding(.top, 12)
     }
 
     private var boxBg: some View {
-        RoundedRectangle(cornerRadius: 14).fill(
+        RoundedRectangle(cornerRadius: WWAVRadius.card).fill(
             LinearGradient(
                 colors: [theme.clay.opacity(0.18), theme.clayDeep.opacity(0.12)],
                 startPoint: .topLeading, endPoint: .bottomTrailing)
         )
     }
     private var boxStroke: some View {
-        RoundedRectangle(cornerRadius: 14).stroke(theme.muted.opacity(0.40), lineWidth: 1)
+        RoundedRectangle(cornerRadius: WWAVRadius.card)
+            .strokeBorder(
+                LinearGradient(
+                    colors: [
+                        theme.glow.opacity(0.40),
+                        theme.muted.opacity(WWAVOpacity.soft),
+                    ],
+                    startPoint: .top, endPoint: .bottom
+                ),
+                lineWidth: 1
+            )
     }
 
     private var sourceLabel: String {
-        multitrackDraft == nil ? "song file" : "stem files"
+        hasSource ? (multitrackDraft == nil ? "song file" : "stem files") : "selected file"
     }
 
     @ViewBuilder
@@ -368,6 +495,8 @@ private struct MusicUploadForm: View {
             }
             .padding(.horizontal, 16).padding(.vertical, 14)
             .background(boxBg).overlay(boxStroke)
+            TrackUploadWaveformPreview()
+                .padding(.top, 4)
         } else if let draft = multitrackDraft {
             VStack(spacing: 0) {
                 HStack(spacing: 14) {
@@ -405,6 +534,94 @@ private struct MusicUploadForm: View {
                 }
             }
             .background(boxBg).overlay(boxStroke)
+        } else {
+            Text("no audio selected yet")
+                .font(.wwav(12, weight: .light, italic: true))
+                .foregroundStyle(theme.muted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .background(boxBg)
+                .overlay(boxStroke)
+        }
+    }
+
+    private var trackDropZone: some View {
+        VStack(spacing: 14) {
+            Button {
+                pickerOpen = true
+            } label: {
+                VStack(spacing: 14) {
+                    ZStack {
+                        Circle()
+                            .fill(
+                                RadialGradient(
+                                    colors: [theme.glow.opacity(0.80), theme.clay, theme.clayDeep],
+                                    center: UnitPoint(x: 0.35, y: 0.25),
+                                    startRadius: 2,
+                                    endRadius: 44
+                                )
+                            )
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 22, weight: .light))
+                            .foregroundStyle(theme.glow)
+                    }
+                    .frame(width: 64, height: 64)
+
+                    VStack(spacing: 6) {
+                        Text(hasSource ? "replace audio file" : "drop audio file here")
+                            .font(.wwav(18, weight: .light, italic: true))
+                            .foregroundStyle(theme.ink)
+                        Text("or tap to browse")
+                            .font(.wwav(12, weight: .light))
+                            .foregroundStyle(theme.muted)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 34)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(theme.glow.opacity(0.10))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(theme.muted.opacity(0.28), style: StrokeStyle(lineWidth: 1, dash: [3, 5]))
+                )
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                recorderOpen = true
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "mic")
+                        .font(.system(size: 18, weight: .semibold))
+                        .frame(width: 34, height: 34)
+                        .background(Circle().fill(theme.glow.opacity(0.22)))
+                    Text("record inside WWAV")
+                        .font(.wwav(16, weight: .medium, italic: true))
+                        .tracking(1.4)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(theme.glow)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 14)
+                .frame(maxWidth: .infinity)
+                .background(
+                    Capsule().fill(
+                        LinearGradient(
+                            colors: [theme.accent, theme.clayDeep],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                )
+                .overlay(Capsule().stroke(theme.glow.opacity(0.36), lineWidth: 1))
+                .shadow(color: theme.accent.opacity(0.28), radius: 18, y: 8)
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -441,7 +658,7 @@ private struct MusicUploadForm: View {
                 Text("album upload")
                     .font(.wwav(14, weight: .regular, italic: true))
                     .foregroundStyle(theme.ink)
-                Text("post this track as the first song on an album")
+                Text("save this track as the first song on an album")
                     .font(.wwav(11, weight: .light))
                     .foregroundStyle(theme.muted)
             }
@@ -505,7 +722,11 @@ private struct MusicUploadForm: View {
 
     @ViewBuilder
     private var statusRow: some View {
-        if let id = inFlightID,
+        if let sourceError, inFlightID == nil {
+            Text("✕ \(sourceError)")
+                .font(.wwav(12, weight: .light))
+                .foregroundStyle(Color.red.opacity(0.7))
+        } else if let id = inFlightID,
             let track = library.myTracks.first(where: { $0.id == id })
         {
             switch track.status {
@@ -514,7 +735,7 @@ private struct MusicUploadForm: View {
                 Button {
                     nav.openPost(track, in: library, with: player)
                 } label: {
-                    Text("✓ stems ready — open in player")
+                    Text("saved to library — open preview")
                         .font(.wwav(13, weight: .light, italic: true))
                         .foregroundStyle(theme.accent)
                 }
@@ -522,38 +743,63 @@ private struct MusicUploadForm: View {
             case .failed(let msg):
                 Text("✕ \(msg)")
                     .font(.wwav(12, weight: .light)).foregroundStyle(Color.red.opacity(0.7))
-            case .uploading: EmptyView()
-            case .sourceOnly: EmptyView()
+            case .uploading(let phase, let p): UploadPhaseProgressRow(status: .uploading(phase: phase, progress: p))
+            case .sourceOnly:
+                Text("saved to library")
+                    .font(.wwav(13, weight: .light, italic: true))
+                    .foregroundStyle(theme.accent)
             }
         }
     }
 
-    private var uploadButton: some View {
+    private var submissionButtons: some View {
+        VStack(spacing: 10) {
+            submitButton(title: saveButtonTitle, publication: .draft, filled: false)
+            submitButton(title: postButtonTitle, publication: .published, filled: true)
+        }
+    }
+
+    private var saveButtonTitle: String {
+        if inFlightID != nil { return "saving..." }
+        return albumMode ? "save track + album" : "save to library"
+    }
+
+    private var postButtonTitle: String {
+        if inFlightID != nil { return "working..." }
+        return albumMode ? "post track + album" : "post to feed"
+    }
+
+    private func submitButton(title: String, publication: PublicationState, filled: Bool) -> some View {
         Button {
-            submit()
+            submit(publication: publication)
         } label: {
-            Text(uploadButtonTitle)
-                .font(.wwav(15, weight: .regular, italic: true)).tracking(2)
-                .foregroundStyle(theme.glow)
-                .frame(maxWidth: .infinity).padding(.vertical, 16)
+            Text(title)
+                .font(.wwav(15, weight: .regular, italic: true))
+                .tracking(2)
+                .foregroundStyle(filled ? theme.glow : theme.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
                 .background(
                     Capsule().fill(
-                        LinearGradient(
-                            colors: [theme.clay, theme.clayDeep],
-                            startPoint: .top, endPoint: .bottom))
+                        filled
+                            ? AnyShapeStyle(LinearGradient(
+                                colors: [theme.clay, theme.clayDeep],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ))
+                            : AnyShapeStyle(theme.sand.opacity(0.62))
+                    )
                 )
-                .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+                .overlay(Capsule().stroke(theme.accent.opacity(filled ? 0 : 0.28), lineWidth: 1))
+                .shadow(color: filled ? .black.opacity(0.18) : .clear, radius: 10, y: 4)
         }
-        .buttonStyle(.plain).disabled(inFlightID != nil).opacity(inFlightID != nil ? 0.7 : 1.0)
+        .buttonStyle(.plain)
+        .disabled(inFlightID != nil || !hasSource)
+        .opacity(inFlightID != nil || !hasSource ? 0.55 : 1.0)
     }
 
-    private var uploadButtonTitle: String {
-        if inFlightID != nil { return multitrackDraft == nil ? "uploading…" : "posted" }
-        if albumMode { return "upload track + album" }
-        return multitrackDraft == nil ? "upload track" : "post multitrack"
-    }
-
-    private func submit() {
+    private func submit(publication: PublicationState) {
+        sourceError = nil
         let id: UUID
         if let f = pickedFile {
             id = library.startUpload(
@@ -561,15 +807,21 @@ private struct MusicUploadForm: View {
                 title: title.isEmpty ? "untitled" : title,
                 bio: bio,
                 coverImage: coverData,
-                token: auth.token
+                token: auth.token,
+                publication: publication
             )
         } else if let draft = multitrackDraft {
+            if let missing = draft.firstMissingStem {
+                sourceError = "\(missing.label) recording is missing. record that lane again."
+                return
+            }
             id = library.startMultitrackUpload(
                 stemURLs: draft.stemURLs,
                 title: title.isEmpty ? "untitled" : title,
                 bio: bio,
                 coverImage: coverData,
-                token: auth.token
+                token: auth.token,
+                publication: publication
             )
         } else {
             return
@@ -586,7 +838,8 @@ private struct MusicUploadForm: View {
                 caption: albumCaption,
                 trackIds: [id] + albumTrackIds,
                 coverImage: albumCoverData ?? coverData,
-                token: auth.token
+                token: auth.token,
+                publication: publication
             )
         }
     }
@@ -600,6 +853,7 @@ private struct MusicUploadForm: View {
         coverItem = nil
         coverImage = nil
         coverData = nil
+        sourceError = nil
         albumMode = false
         albumTitle = ""
         albumCaption = ""
@@ -613,17 +867,104 @@ private struct MusicUploadForm: View {
         pickedFile = nil
         multitrackDraft = nil
         inFlightID = nil
+        sourceError = nil
     }
 }
 
 private struct MultitrackDraft: Equatable {
     let stemURLs: [StemKind: URL]
+
+    var firstMissingStem: StemKind? {
+        StemKind.allCases.first { kind in
+            guard let url = stemURLs[kind] else { return true }
+            return !FileManager.default.fileExists(atPath: url.path)
+        }
+    }
+}
+
+private enum RecordingDraftStore {
+    static func copySingle(_ source: URL) throws -> URL {
+        let folder = try makeDraftDirectory()
+        return try copy(source, to: folder, filename: "single.\(fileExtension(for: source))")
+    }
+
+    static func copyStems(_ stems: [StemKind: URL]) throws -> [StemKind: URL] {
+        let folder = try makeDraftDirectory()
+        var copied: [StemKind: URL] = [:]
+        for kind in StemKind.allCases {
+            guard let source = stems[kind] else {
+                throw RecordingDraftStoreError.missingStem(kind.label)
+            }
+            copied[kind] = try copy(
+                source,
+                to: folder,
+                filename: "\(kind.rawValue).\(fileExtension(for: source))"
+            )
+        }
+        return copied
+    }
+
+    private static func makeDraftDirectory() throws -> URL {
+        let base = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let folder = base
+            .appendingPathComponent("wwav/recording-drafts", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    private static func copy(_ source: URL, to folder: URL, filename: String) throws -> URL {
+        let dest = folder.appendingPathComponent(filename)
+        if FileManager.default.fileExists(atPath: dest.path) {
+            try FileManager.default.removeItem(at: dest)
+        }
+        try FileManager.default.copyItem(at: source, to: dest)
+        return dest
+    }
+
+    private static func fileExtension(for source: URL) -> String {
+        source.pathExtension.isEmpty ? "wav" : source.pathExtension
+    }
+}
+
+private enum RecordingDraftStoreError: LocalizedError {
+    case missingStem(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingStem(let label):
+            return "\(label) was not recorded."
+        }
+    }
+}
+
+private struct TrackUploadWaveformPreview: View {
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(0..<76, id: \.self) { index in
+                let wave = abs(sin(Double(index) * 0.42) * cos(Double(index) * 0.17))
+                Capsule()
+                    .fill(index < 28 ? theme.accent.opacity(0.88) : theme.muted.opacity(0.28))
+                    .frame(width: 3, height: 7 + wave * 34)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 48, maxHeight: 52, alignment: .center)
+    }
 }
 
 
 // MARK: – Album upload (groups existing songs)
 
 private struct AlbumUploadForm: View {
+    let onBack: (() -> Void)?
+
     @EnvironmentObject var library: TrackLibrary
     @EnvironmentObject var auth: AuthManager
     @Environment(\.theme) private var theme
@@ -636,22 +977,39 @@ private struct AlbumUploadForm: View {
     @State private var coverData: Data?
     @State private var lastPostedAt: Date?
 
+    init(onBack: (() -> Void)? = nil) {
+        self.onBack = onBack
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 HStack {
-                    Text("new album").wwavLabel(size: 11, tracking: 2.5)
+                    Button {
+                        onBack?()
+                    } label: {
+                        Text("← back")
+                            .font(.wwav(12, weight: .light, italic: true))
+                            .tracking(1.5)
+                            .foregroundStyle(theme.muted)
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                    Text("album").wwavLabel(size: 11, tracking: 3)
+                }
+                .padding(.top, 4)
+
+                HStack {
                     Spacer()
                     if let posted = lastPostedAt, Date().timeIntervalSince(posted) < 6 {
-                        Text("posted")
+                        Text("saved")
                             .font(.wwav(11, weight: .light, italic: true))
                             .foregroundStyle(theme.accent)
                     }
                 }
-                .padding(.top, 4)
 
-                Text("group songs into an album.")
-                    .wwavTitle(size: 36)
+                Text("new album")
+                    .wwavTitle(size: 40)
 
                 if library.albumCandidateTracks.isEmpty {
                     Text("upload songs first, then come back here to assemble the album tracklist.")
@@ -699,43 +1057,7 @@ private struct AlbumUploadForm: View {
                         selectedIDs: $selectedTrackIds
                     )
 
-                    Button {
-                        _ = library.createAlbumPost(
-                            title: title,
-                            caption: caption,
-                            trackIds: selectedTrackIds,
-                            coverImage: coverData,
-                            token: auth.token
-                        )
-                        title = ""
-                        caption = ""
-                        selectedTrackIds = []
-                        coverItem = nil
-                        coverImage = nil
-                        coverData = nil
-                        lastPostedAt = Date()
-                    } label: {
-                        Text("post album")
-                            .font(.wwav(15, weight: .regular, italic: true))
-                            .tracking(2)
-                            .foregroundStyle(theme.glow)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
-                            .background(
-                                Capsule().fill(
-                                    LinearGradient(
-                                        colors: [theme.clay, theme.clayDeep],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                )
-                            )
-                            .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(selectedTrackIds.isEmpty)
-                    .opacity(selectedTrackIds.isEmpty ? 0.5 : 1)
-                    .padding(.top, 4)
+                    albumActionButtons
                 }
             }
             .padding(.horizontal, 28)
@@ -743,14 +1065,72 @@ private struct AlbumUploadForm: View {
             .padding(.bottom, 24)
         }
     }
+
+    private var albumActionButtons: some View {
+        VStack(spacing: 10) {
+            albumActionButton("save album to library", publication: .draft, filled: false)
+            albumActionButton("post album to feed", publication: .published, filled: true)
+        }
+        .padding(.top, 4)
+    }
+
+    private func albumActionButton(
+        _ label: String,
+        publication: PublicationState,
+        filled: Bool
+    ) -> some View {
+        Button {
+            _ = library.createAlbumPost(
+                title: title,
+                caption: caption,
+                trackIds: selectedTrackIds,
+                coverImage: coverData,
+                token: auth.token,
+                publication: publication
+            )
+            self.title = ""
+            caption = ""
+            selectedTrackIds = []
+            coverItem = nil
+            coverImage = nil
+            coverData = nil
+            lastPostedAt = Date()
+        } label: {
+            Text(label)
+                .font(.wwav(15, weight: .regular, italic: true))
+                .tracking(2)
+                .foregroundStyle(filled ? theme.glow : theme.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .background(
+                    Capsule().fill(
+                        filled
+                            ? AnyShapeStyle(LinearGradient(
+                                colors: [theme.clay, theme.clayDeep],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ))
+                            : AnyShapeStyle(theme.sand.opacity(0.62))
+                    )
+                )
+                .overlay(Capsule().stroke(theme.accent.opacity(filled ? 0 : 0.28), lineWidth: 1))
+                .shadow(color: filled ? .black.opacity(0.18) : .clear, radius: 10, y: 4)
+        }
+        .buttonStyle(.plain)
+        .disabled(selectedTrackIds.isEmpty)
+        .opacity(selectedTrackIds.isEmpty ? 0.5 : 1)
+    }
 }
 
 // MARK: – Radio upload form
 
 struct RadioUploadForm: View {
+    let onBack: (() -> Void)?
+
     @EnvironmentObject var library: TrackLibrary
     @EnvironmentObject var player: StemPlayerEngine
     @EnvironmentObject var nav: AppNavigation
+    @EnvironmentObject var broadcaster: LiveRadioBroadcaster
     @Environment(\.theme) private var theme
 
     @State private var sessionId: UUID?
@@ -758,6 +1138,14 @@ struct RadioUploadForm: View {
     @State private var notes: String = ""
     @State private var queueTrackIds: [UUID] = []
     @State private var savedAt: Date?
+    @State private var showingDJConsole: Bool = false
+    @State private var radioError: String?
+    @State private var radioStatus: String?
+    @State private var preparingRadioTrackId: UUID?
+
+    init(onBack: (() -> Void)? = nil) {
+        self.onBack = onBack
+    }
 
     private var mySession: RadioSession? {
         if let sessionId,
@@ -788,7 +1176,8 @@ struct RadioUploadForm: View {
                             onAirCard(mySession)
                         }
 
-                        fields
+                        streamTitleField
+                        controls
 
                         TrackQueueEditor(
                             title: "queue playlist",
@@ -797,7 +1186,7 @@ struct RadioUploadForm: View {
                             selectedIDs: $queueTrackIds
                         )
 
-                        controls
+                        notesField
                     }
                 }
                 .padding(.horizontal, 24)
@@ -805,11 +1194,40 @@ struct RadioUploadForm: View {
                 .padding(.bottom, 28)
             }
         }
-        .onAppear { hydrateFromSession() }
+        .onAppear {
+            reconcileRuntimeLiveState()
+            hydrateFromSession()
+        }
+        .fullScreenCover(isPresented: $showingDJConsole) {
+            if let session = mySession {
+                DJConsoleView(
+                    broadcaster: broadcaster,
+                    session: session,
+                    queueTracks: library.tracks(for: session)
+                ) {
+                    broadcaster.endLive()
+                    library.stopRadio(id: session.id)
+                    hydrateFromSession()
+                }
+            }
+        }
     }
 
     private var header: some View {
         HStack(spacing: 14) {
+            if let onBack {
+                Button {
+                    onBack()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(theme.muted)
+                        .frame(width: 34, height: 34)
+                        .background(Circle().fill(theme.sand.opacity(0.58)))
+                        .overlay(Circle().stroke(theme.muted.opacity(0.18), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
             RadioPulseMark()
                 .frame(width: 54, height: 54)
             VStack(alignment: .leading, spacing: 4) {
@@ -887,11 +1305,13 @@ struct RadioUploadForm: View {
 
                     Spacer(minLength: 0)
                     Button {
-                        nav.openPost(currentTrack, in: library, with: player)
+                        showingDJConsole = true
                     } label: {
                         ZStack {
                             Circle().fill(theme.accent)
-                            Triangle().fill(theme.glow).frame(width: 9, height: 11).offset(x: 1)
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(theme.glow)
                         }
                         .frame(width: 38, height: 38)
                     }
@@ -904,34 +1324,54 @@ struct RadioUploadForm: View {
         .overlay(radioStroke)
     }
 
+    private var streamTitleField: some View {
+        radioField(label: "stream title") {
+            TextField("", text: $title, prompt: Text("late night wwav").foregroundStyle(theme.muted))
+                .font(.wwav(23, weight: .light, italic: true))
+                .foregroundStyle(theme.ink)
+                .padding(.vertical, 8)
+                .overlay(Rectangle().fill(theme.muted.opacity(0.3)).frame(height: 1), alignment: .bottom)
+        }
+    }
+
+    private var notesField: some View {
+        radioField(label: "notes") {
+            TextEditor(text: $notes)
+                .scrollContentBackground(.hidden)
+                .font(.wwav(15, weight: .light))
+                .foregroundStyle(theme.ink)
+                .frame(minHeight: 76, maxHeight: 120)
+                .padding(12)
+                .background(radioBg)
+                .overlay(radioStroke)
+        }
+    }
+
     private var fields: some View {
         VStack(alignment: .leading, spacing: 16) {
-            radioField(label: "stream title") {
-                TextField("", text: $title, prompt: Text("late night wwav").foregroundStyle(theme.muted))
-                    .font(.wwav(23, weight: .light, italic: true))
-                    .foregroundStyle(theme.ink)
-                    .padding(.vertical, 8)
-                    .overlay(Rectangle().fill(theme.muted.opacity(0.3)).frame(height: 1), alignment: .bottom)
-            }
-            radioField(label: "notes") {
-                TextEditor(text: $notes)
-                    .scrollContentBackground(.hidden)
-                    .font(.wwav(15, weight: .light))
-                    .foregroundStyle(theme.ink)
-                    .frame(minHeight: 76, maxHeight: 120)
-                    .padding(12)
-                    .background(radioBg)
-                    .overlay(radioStroke)
-            }
+            streamTitleField
+            controls
+            notesField
         }
     }
 
     private var controls: some View {
         VStack(spacing: 10) {
+            if let radioError {
+                Text(radioError)
+                    .font(.wwav(11, weight: .light, italic: true))
+                    .foregroundStyle(Color.red.opacity(0.78))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let radioStatus {
+                Text(radioStatus)
+                    .font(.wwav(11, weight: .light, italic: true))
+                    .foregroundStyle(theme.accent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             Button {
                 goLiveOrSave()
             } label: {
-                Text(mySession?.isLive == true ? "save queue" : "go live")
+                Text(preparingRadioTrackId != nil ? "loading queue..." : (mySession?.isLive == true ? "save + stay live" : "go live"))
                     .font(.wwav(15, weight: .regular, italic: true))
                     .tracking(2)
                     .foregroundStyle(theme.glow)
@@ -948,21 +1388,24 @@ struct RadioUploadForm: View {
                     )
             }
             .buttonStyle(.plain)
-            .disabled(queueTrackIds.isEmpty)
-            .opacity(queueTrackIds.isEmpty ? 0.5 : 1)
+            .disabled(queueTrackIds.isEmpty || preparingRadioTrackId != nil)
+            .opacity(queueTrackIds.isEmpty || preparingRadioTrackId != nil ? 0.5 : 1)
 
             if let mySession {
                 HStack(spacing: 10) {
                     Button {
-                        library.advanceRadio(id: mySession.id)
+                        Task {
+                            await playNextQueuedTrack(in: mySession)
+                        }
                     } label: {
                         radioControlPill("next")
                     }
                     .buttonStyle(.plain)
-                    .disabled(!mySession.isLive || mySession.queueTrackIds.count < 2)
-                    .opacity(mySession.isLive && mySession.queueTrackIds.count > 1 ? 1 : 0.45)
+                    .disabled(!mySession.isLive || mySession.queueTrackIds.count < 2 || preparingRadioTrackId != nil)
+                    .opacity(mySession.isLive && mySession.queueTrackIds.count > 1 && preparingRadioTrackId == nil ? 1 : 0.45)
 
                     Button {
+                        broadcaster.endLive()
                         library.stopRadio(id: mySession.id)
                         hydrateFromSession()
                     } label: {
@@ -972,6 +1415,15 @@ struct RadioUploadForm: View {
                     .disabled(!mySession.isLive)
                     .opacity(mySession.isLive ? 1 : 0.45)
                 }
+
+                Button {
+                    showingDJConsole = true
+                } label: {
+                    radioControlPill("open dj console")
+                }
+                .buttonStyle(.plain)
+                .disabled(!mySession.isLive)
+                .opacity(mySession.isLive ? 1 : 0.45)
             }
 
             if let savedAt, Date().timeIntervalSince(savedAt) < 5 {
@@ -1015,6 +1467,9 @@ struct RadioUploadForm: View {
     }
 
     private func goLiveOrSave() {
+        radioError = nil
+        radioStatus = nil
+        var liveSessionId: UUID?
         if let mySession {
             library.updateRadioSession(
                 id: mySession.id,
@@ -1024,9 +1479,24 @@ struct RadioUploadForm: View {
             )
             if !mySession.isLive {
                 sessionId = library.startRadio(title: title, notes: notes, queueTrackIds: queueTrackIds)
+                liveSessionId = sessionId
+            } else {
+                liveSessionId = mySession.id
             }
         } else {
             sessionId = library.startRadio(title: title, notes: notes, queueTrackIds: queueTrackIds)
+            liveSessionId = sessionId
+        }
+        if let liveSessionId {
+            if broadcaster.goLive(sessionId: liveSessionId) {
+                showingDJConsole = true
+                Task {
+                    await playCurrentQueuedTrack(in: liveSessionId)
+                }
+            } else {
+                library.stopRadio(id: liveSessionId)
+                radioError = "couldn't start the mic. check microphone permission and try again."
+            }
         }
         savedAt = Date()
         hydrateFromSession()
@@ -1041,6 +1511,48 @@ struct RadioUploadForm: View {
         title = session.title
         notes = session.notes
         queueTrackIds = session.queueTrackIds
+    }
+
+    private func reconcileRuntimeLiveState() {
+        guard let session = mySession, session.isLive, !broadcaster.isLive else { return }
+        library.stopRadio(id: session.id)
+    }
+
+    private func playNextQueuedTrack(in session: RadioSession) async {
+        radioError = nil
+        radioStatus = nil
+        library.advanceRadio(id: session.id)
+        guard let updated = library.radioSessions.first(where: { $0.id == session.id }),
+              let nextTrack = library.currentTrack(for: updated) else { return }
+        await prepareAndPlayQueuedTrack(nextTrack, sessionId: session.id)
+    }
+
+    private func playCurrentQueuedTrack(in sessionId: UUID) async {
+        guard let session = library.radioSessions.first(where: { $0.id == sessionId }),
+              let track = library.currentTrack(for: session) else { return }
+        await prepareAndPlayQueuedTrack(track, sessionId: sessionId)
+    }
+
+    private func prepareAndPlayQueuedTrack(_ track: Track, sessionId: UUID) async {
+        guard preparingRadioTrackId == nil else { return }
+        preparingRadioTrackId = track.id
+        radioStatus = "loading \(track.title)..."
+        let primed = await library.prepareForPlayback(track)
+        guard let primed else {
+            preparingRadioTrackId = nil
+            radioStatus = nil
+            radioError = "couldn't load stems for \(track.title). try another queued song."
+            return
+        }
+        library.setRadioCurrentTrack(id: sessionId, trackId: primed.id)
+        if broadcaster.playSong(primed) {
+            library.incrementPlays(of: primed.id)
+            radioStatus = "playing \(primed.title)"
+        } else {
+            radioStatus = nil
+            radioError = "\(primed.title) isn't ready for radio playback yet."
+        }
+        preparingRadioTrackId = nil
     }
 
     private func normalize(_ value: String) -> String {
@@ -1124,7 +1636,7 @@ private struct ImageUploadForm: View {
             if let posted = lastPostedAt, Date().timeIntervalSince(posted) < 6 {
                 VStack {
                     Spacer()
-                    Text("✓ posted")
+                    Text("saved to library")
                         .font(.wwav(13, weight: .light, italic: true))
                         .foregroundStyle(theme.accent)
                         .padding(.bottom, 24)
@@ -1144,9 +1656,13 @@ private struct ImageUploadForm: View {
         ) {
             ImageDetailsSheet(
                 previews: previews,
-                onPost: { title, caption in
+                onPost: { title, caption, publication in
                     _ = library.createImagePost(
-                        images: datas, title: title, caption: caption, token: auth.token
+                        images: datas,
+                        title: title,
+                        caption: caption,
+                        token: auth.token,
+                        publication: publication
                     )
                     lastPostedAt = Date()
                     sheetOpen = false
@@ -1176,44 +1692,331 @@ private struct ImageUploadForm: View {
 }
 
 // MARK: – Text upload
-//
-// Tap the big circle → opens a sheet with title + body fields. No picker
-// needed — text is born inside the modal.
 
 private struct TextUploadForm: View {
+    let onBack: (() -> Void)?
+
     @EnvironmentObject var library: TrackLibrary
     @EnvironmentObject var auth: AuthManager
     @Environment(\.theme) private var theme
 
-    @State private var sheetOpen: Bool = false
+    @State private var title: String = ""
+    @State private var bodyText: String = ""
+    @State private var imageItems: [PhotosPickerItem] = []
+    @State private var imageData: [Data] = []
+    @State private var imagePreviews: [UIImage] = []
+    @State private var showingImageSourceDialog: Bool = false
+    @State private var imageCameraOpen: Bool = false
+    @State private var imageLibraryOpen: Bool = false
     @State private var lastPostedAt: Date?
 
+    init(onBack: (() -> Void)? = nil) {
+        self.onBack = onBack
+    }
+
     var body: some View {
-        ZStack {
-            BigCircleEntry(
-                title: "write something. say it loud.",
-                subtitle: "thoughts · notes · short form",
-                kicker: "text post"
-            ) {
-                sheetOpen = true
-            }
-            if let posted = lastPostedAt, Date().timeIntervalSince(posted) < 6 {
-                VStack {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                HStack {
+                    Button {
+                        onBack?()
+                    } label: {
+                        Text("← back")
+                            .font(.wwav(12, weight: .light, italic: true))
+                            .tracking(1.5)
+                            .foregroundStyle(theme.muted)
+                    }
+                    .buttonStyle(.plain)
                     Spacer()
-                    Text("✓ posted")
-                        .font(.wwav(13, weight: .light, italic: true))
+                    Text("text post").wwavLabel(size: 11, tracking: 3)
+                }
+                .padding(.top, 4)
+
+                Text("new post")
+                    .wwavTitle(size: 40)
+
+                HStack(spacing: 14) {
+                    Circle()
+                        .fill(
+                            RadialGradient(
+                                colors: [theme.glow.opacity(0.68), theme.muted.opacity(0.55)],
+                                center: UnitPoint(x: 0.35, y: 0.25),
+                                startRadius: 1,
+                                endRadius: 32
+                            )
+                        )
+                        .frame(width: 52, height: 52)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(auth.user?.username ?? library.profile.name)
+                            .font(.wwav(16, weight: .medium))
+                            .foregroundStyle(theme.ink)
+                        Text("@\((auth.user?.username ?? library.profile.handle).trimmingCharacters(in: CharacterSet(charactersIn: "@")))")
+                            .font(.wwav(12, weight: .light))
+                            .foregroundStyle(theme.muted)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 14) {
+                    TextField(
+                        "", text: $title,
+                        prompt: Text("title (optional)").foregroundStyle(theme.muted)
+                    )
+                    .font(.wwav(22, weight: .light, italic: true))
+                    .foregroundStyle(theme.ink)
+                    .padding(.vertical, 8)
+                    .overlay(Rectangle().fill(theme.muted.opacity(0.20)).frame(height: 1), alignment: .bottom)
+
+                    ZStack(alignment: .topLeading) {
+                        if bodyText.isEmpty {
+                            Text("write the post…")
+                                .font(.wwav(20, weight: .light, italic: true))
+                                .foregroundStyle(theme.muted.opacity(0.78))
+                                .padding(.top, 12)
+                                .padding(.leading, 8)
+                        }
+
+                        TextEditor(text: $bodyText)
+                            .scrollContentBackground(.hidden)
+                            .font(.wwav(20, weight: .light, italic: true))
+                            .foregroundStyle(theme.ink)
+                            .lineSpacing(7)
+                            .frame(minHeight: 150, maxHeight: 210)
+                            .padding(.horizontal, 2)
+                            .background(Color.clear)
+                    }
+
+                    if imagePreviews.isEmpty {
+                        imageAttachButton(prominent: true)
+                    } else {
+                        textImageStrip
+                    }
+
+                    HStack {
+                        Text("\(bodyText.count) characters")
+                            .font(.wwav(10, weight: .light))
+                            .tracking(1.4)
+                            .monospacedDigit()
+                            .foregroundStyle(theme.muted.opacity(0.85))
+                        Spacer()
+                        Text(canPost ? "ready" : "add text or photos")
+                            .font(.wwav(10, weight: .light, italic: true))
+                            .tracking(1.4)
+                            .foregroundStyle(canPost ? theme.accent : theme.muted.opacity(0.85))
+                    }
+                }
+                .padding(14)
+                .background(RoundedRectangle(cornerRadius: WWAVRadius.card).fill(theme.glow.opacity(WWAVOpacity.veil)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: WWAVRadius.card)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    theme.glow.opacity(0.40),
+                                    theme.muted.opacity(WWAVOpacity.soft),
+                                ],
+                                startPoint: .top, endPoint: .bottom
+                            ),
+                            lineWidth: 1
+                        )
+                )
+
+                if let posted = lastPostedAt, Date().timeIntervalSince(posted) < 6 {
+                    Text("saved")
+                        .font(.wwav(12, weight: .light, italic: true))
                         .foregroundStyle(theme.accent)
-                        .padding(.bottom, 24)
+                }
+
+                HStack(spacing: 10) {
+                    Spacer()
+                    textActionButton("save", publication: .draft, filled: false)
+                    textActionButton("post", publication: .published, filled: true)
+                }
+                .padding(.top, 4)
+                .overlay(Rectangle().fill(theme.muted.opacity(0.16)).frame(height: 1), alignment: .top)
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 12)
+            .padding(.bottom, 28)
+        }
+        .onChange(of: imageItems) { _, newItems in
+            Task { await loadTextImages(from: newItems) }
+        }
+        .photosPicker(
+            isPresented: $imageLibraryOpen,
+            selection: $imageItems,
+            maxSelectionCount: 10,
+            matching: .images,
+            preferredItemEncoding: .compatible,
+            photoLibrary: .shared()
+        )
+        .fullScreenCover(isPresented: $imageCameraOpen) {
+            WWAVCameraImagePicker { image in
+                appendCameraImage(image)
+            }
+            .ignoresSafeArea()
+        }
+        .confirmationDialog("add image", isPresented: $showingImageSourceDialog, titleVisibility: .visible) {
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                Button("open camera") {
+                    imageCameraOpen = true
+                }
+            }
+            Button("open camera roll") {
+                imageLibraryOpen = true
+            }
+            Button("cancel", role: .cancel) {}
+        }
+    }
+
+    private var canPost: Bool {
+        !bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !imageData.isEmpty
+    }
+
+    private func imageAttachButton(prominent: Bool) -> some View {
+        Button {
+            showingImageSourceDialog = true
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "photo.on.rectangle")
+                    .font(.system(size: prominent ? 16 : 12, weight: .regular))
+                Text(imagePreviews.isEmpty ? "add photos" : "change")
+                    .font(.wwav(prominent ? 14 : 11, weight: .medium, italic: true))
+                    .tracking(prominent ? 1.2 : 0.8)
+                if prominent {
+                    Spacer(minLength: 0)
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+            }
+            .foregroundStyle(imagePreviews.isEmpty ? theme.ink : theme.accent)
+            .padding(.horizontal, prominent ? 14 : 10)
+            .padding(.vertical, prominent ? 12 : 7)
+            .frame(maxWidth: prominent ? .infinity : nil, alignment: .leading)
+            .background(
+                Capsule().fill(
+                    prominent
+                        ? AnyShapeStyle(theme.sand.opacity(0.66))
+                        : AnyShapeStyle(theme.muted.opacity(0.10))
+                )
+            )
+            .overlay(Capsule().stroke(theme.muted.opacity(0.22), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var textImageStrip: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("\(imagePreviews.count) image\(imagePreviews.count == 1 ? "" : "s") attached")
+                    .wwavLabel(size: 10, tracking: 2)
+                Spacer()
+                imageAttachButton(prominent: false)
+                Button {
+                    imageItems = []
+                    imageData = []
+                    imagePreviews = []
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(theme.muted)
+                        .frame(width: 30, height: 30)
+                        .background(Circle().fill(theme.muted.opacity(0.10)))
+                }
+                .buttonStyle(.plain)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(Array(imagePreviews.enumerated()), id: \.offset) { _, image in
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 92, height: 92)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(theme.muted.opacity(0.20), lineWidth: 1)
+                            )
+                    }
                 }
             }
         }
-        .sheet(isPresented: $sheetOpen) {
-            TextDetailsSheet { title, body in
-                _ = library.createTextPost(title: title, body: body, token: auth.token)
-                lastPostedAt = Date()
-                sheetOpen = false
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12).fill(theme.sand.opacity(0.56)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.muted.opacity(0.16), lineWidth: 1))
+    }
+
+    private func textActionButton(
+        _ label: String,
+        publication: PublicationState,
+        filled: Bool
+    ) -> some View {
+        Button {
+            postText(publication: publication)
+        } label: {
+            Text(label)
+                .font(.wwav(15, weight: .regular, italic: true))
+                .foregroundStyle(filled ? theme.glow : theme.accent)
+                .padding(.horizontal, filled ? 28 : 18)
+                .padding(.vertical, 14)
+                .background(
+                    Capsule().fill(
+                        filled
+                            ? AnyShapeStyle(LinearGradient(
+                                colors: [theme.clay, theme.clayDeep],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ))
+                            : AnyShapeStyle(theme.sand.opacity(0.62))
+                    )
+                )
+                .overlay(Capsule().stroke(theme.accent.opacity(filled ? 0 : 0.28), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(!canPost)
+        .opacity(canPost ? 1 : 0.5)
+    }
+
+    private func postText(publication: PublicationState) {
+        let trimmed = bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canPost else { return }
+        _ = library.createTextPost(
+            title: title,
+            body: trimmed,
+            images: imageData,
+            token: auth.token,
+            publication: publication
+        )
+        title = ""
+        bodyText = ""
+        imageItems = []
+        imageData = []
+        imagePreviews = []
+        lastPostedAt = Date()
+    }
+
+    private func loadTextImages(from items: [PhotosPickerItem]) async {
+        var datas: [Data] = []
+        var previews: [UIImage] = []
+        for item in items {
+            if let data = try? await item.loadTransferable(type: Data.self),
+               let image = UIImage(data: data) {
+                let jpeg = image.jpegData(compressionQuality: 0.85) ?? data
+                datas.append(jpeg)
+                previews.append(image)
             }
         }
+        await MainActor.run {
+            imageData = datas
+            imagePreviews = previews
+        }
+    }
+
+    private func appendCameraImage(_ image: UIImage) {
+        guard imagePreviews.count < 10 else { return }
+        guard let data = image.jpegData(compressionQuality: 0.85) else { return }
+        imageData.append(data)
+        imagePreviews.append(image)
     }
 }
 
@@ -1223,6 +2026,8 @@ private struct TextUploadForm: View {
 // up to collect cover art + title + caption, then posts.
 
 private struct VideoUploadForm: View {
+    let onBack: (() -> Void)?
+
     @EnvironmentObject var library: TrackLibrary
     @EnvironmentObject var auth: AuthManager
     @Environment(\.theme) private var theme
@@ -1235,6 +2040,10 @@ private struct VideoUploadForm: View {
     @State private var lastPostedAt: Date?
     @State private var inFlightID: UUID?
 
+    init(onBack: (() -> Void)? = nil) {
+        self.onBack = onBack
+    }
+
     private var inflightVideo: Track? {
         guard let id = inFlightID else { return nil }
         return library.myTracks.first(where: { $0.id == id })
@@ -1245,7 +2054,8 @@ private struct VideoUploadForm: View {
             BigCirclePickerScaffold(
                 kicker: "video post",
                 title: "drop a clip. take the screen.",
-                subtitle: "mp4 · mov · 9:16 looks best"
+                subtitle: "mp4 · mov · portrait or landscape",
+                onBack: onBack
             ) {
                 PhotosPicker(
                     selection: $videoItem,
@@ -1277,7 +2087,7 @@ private struct VideoUploadForm: View {
                             .padding(.horizontal, 28)
                             .padding(.bottom, 24)
                     case .ready:
-                        Text("✓ posted")
+                        Text("saved to library")
                             .font(.wwav(13, weight: .light, italic: true))
                             .foregroundStyle(theme.accent)
                             .padding(.bottom, 24)
@@ -1291,7 +2101,7 @@ private struct VideoUploadForm: View {
                         EmptyView()
                     }
                 } else if let posted = lastPostedAt, Date().timeIntervalSince(posted) < 6 {
-                    Text("✓ posted")
+                    Text("saved to library")
                         .font(.wwav(13, weight: .light, italic: true))
                         .foregroundStyle(theme.accent)
                         .padding(.bottom, 24)
@@ -1310,11 +2120,12 @@ private struct VideoUploadForm: View {
         ) {
             VideoDetailsSheet(
                 videoURL: videoURL,
-                onPost: { title, caption, coverData in
+                onPost: { title, caption, coverData, publication in
                     guard let url = videoURL else { return }
                     inFlightID = library.createVideoPost(
                         videoURL: url, title: title, caption: caption,
-                        coverImage: coverData, token: auth.token
+                        coverImage: coverData, token: auth.token,
+                        publication: publication
                     )
                     lastPostedAt = Date()
                     sheetOpen = false
@@ -1389,7 +2200,7 @@ private struct VideoUploadForm: View {
 
 private struct ImageDetailsSheet: View {
     let previews: [UIImage]
-    let onPost: (_ title: String, _ caption: String) -> Void
+    let onPost: (_ title: String, _ caption: String, _ publication: PublicationState) -> Void
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
 
@@ -1438,23 +2249,11 @@ private struct ImageDetailsSheet: View {
                                     SheetBox.stroke(theme))
                         }
 
-                        Button {
-                            onPost(title, caption)
-                        } label: {
-                            Text("post images")
-                                .font(.wwav(15, weight: .regular, italic: true)).tracking(2)
-                                .foregroundStyle(theme.glow).frame(maxWidth: .infinity).padding(
-                                    .vertical, 16
-                                )
-                                .background(
-                                    Capsule().fill(
-                                        LinearGradient(
-                                            colors: [theme.clay, theme.clayDeep],
-                                            startPoint: .top, endPoint: .bottom))
-                                )
-                                .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+                        VStack(spacing: 10) {
+                            imageActionButton("save images to library", publication: .draft, filled: false)
+                            imageActionButton("post images to feed", publication: .published, filled: true)
                         }
-                        .buttonStyle(.plain).padding(.top, 8)
+                        .padding(.top, 8)
                     }
                     .padding(.horizontal, 28).padding(.vertical, 24)
                 }
@@ -1468,10 +2267,41 @@ private struct ImageDetailsSheet: View {
             }
         }
     }
+
+    private func imageActionButton(
+        _ label: String,
+        publication: PublicationState,
+        filled: Bool
+    ) -> some View {
+        Button {
+            onPost(title, caption, publication)
+        } label: {
+            Text(label)
+                .font(.wwav(15, weight: .regular, italic: true))
+                .tracking(2)
+                .foregroundStyle(filled ? theme.glow : theme.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .background(
+                    Capsule().fill(
+                        filled
+                            ? AnyShapeStyle(LinearGradient(
+                                colors: [theme.clay, theme.clayDeep],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ))
+                            : AnyShapeStyle(theme.sand.opacity(0.62))
+                    )
+                )
+                .overlay(Capsule().stroke(theme.accent.opacity(filled ? 0 : 0.28), lineWidth: 1))
+                .shadow(color: filled ? .black.opacity(0.18) : .clear, radius: 10, y: 4)
+        }
+        .buttonStyle(.plain)
+    }
 }
 
 private struct TextDetailsSheet: View {
-    let onPost: (_ title: String, _ body: String) -> Void
+    let onPost: (_ title: String, _ body: String, _ publication: PublicationState) -> Void
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
 
@@ -1510,28 +2340,10 @@ private struct TextDetailsSheet: View {
                         Text("\(body_.count) chars")
                             .font(.wwav(11, weight: .light)).foregroundStyle(theme.muted)
 
-                        Button {
-                            onPost(title, body_)
-                        } label: {
-                            Text("post")
-                                .font(.wwav(15, weight: .regular, italic: true)).tracking(2)
-                                .foregroundStyle(theme.glow).frame(maxWidth: .infinity).padding(
-                                    .vertical, 16
-                                )
-                                .background(
-                                    Capsule().fill(
-                                        LinearGradient(
-                                            colors: [theme.clay, theme.clayDeep],
-                                            startPoint: .top, endPoint: .bottom))
-                                )
-                                .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+                        VStack(spacing: 10) {
+                            textDetailActionButton("save to library", publication: .draft, filled: false)
+                            textDetailActionButton("post to feed", publication: .published, filled: true)
                         }
-                        .buttonStyle(.plain)
-                        .disabled(body_.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .opacity(
-                            body_.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                ? 0.5 : 1.0
-                        )
                         .padding(.top, 8)
                     }
                     .padding(.horizontal, 28).padding(.vertical, 24)
@@ -1546,11 +2358,45 @@ private struct TextDetailsSheet: View {
             }
         }
     }
+
+    private func textDetailActionButton(
+        _ label: String,
+        publication: PublicationState,
+        filled: Bool
+    ) -> some View {
+        let empty = body_.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return Button {
+            onPost(title, body_, publication)
+        } label: {
+            Text(label)
+                .font(.wwav(15, weight: .regular, italic: true))
+                .tracking(2)
+                .foregroundStyle(filled ? theme.glow : theme.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .background(
+                    Capsule().fill(
+                        filled
+                            ? AnyShapeStyle(LinearGradient(
+                                colors: [theme.clay, theme.clayDeep],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ))
+                            : AnyShapeStyle(theme.sand.opacity(0.62))
+                    )
+                )
+                .overlay(Capsule().stroke(theme.accent.opacity(filled ? 0 : 0.28), lineWidth: 1))
+                .shadow(color: filled ? .black.opacity(0.18) : .clear, radius: 10, y: 4)
+        }
+        .buttonStyle(.plain)
+        .disabled(empty)
+        .opacity(empty ? 0.5 : 1.0)
+    }
 }
 
 private struct VideoDetailsSheet: View {
     let videoURL: URL?
-    let onPost: (_ title: String, _ caption: String, _ coverData: Data?) -> Void
+    let onPost: (_ title: String, _ caption: String, _ coverData: Data?, _ publication: PublicationState) -> Void
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
 
@@ -1620,25 +2466,10 @@ private struct VideoDetailsSheet: View {
                                     SheetBox.stroke(theme))
                         }
 
-                        Button {
-                            onPost(title, caption, coverData)
-                        } label: {
-                            Text("post video")
-                                .font(.wwav(15, weight: .regular, italic: true)).tracking(2)
-                                .foregroundStyle(theme.glow).frame(maxWidth: .infinity).padding(
-                                    .vertical, 16
-                                )
-                                .background(
-                                    Capsule().fill(
-                                        LinearGradient(
-                                            colors: [theme.clay, theme.clayDeep],
-                                            startPoint: .top, endPoint: .bottom))
-                                )
-                                .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+                        VStack(spacing: 10) {
+                            videoActionButton("save video to library", publication: .draft, filled: false)
+                            videoActionButton("post video to feed", publication: .published, filled: true)
                         }
-                        .buttonStyle(.plain).disabled(videoURL == nil).opacity(
-                            videoURL == nil ? 0.5 : 1.0
-                        )
                         .padding(.top, 8)
                     }
                     .padding(.horizontal, 28).padding(.vertical, 24)
@@ -1652,6 +2483,39 @@ private struct VideoDetailsSheet: View {
                 }
             }
         }
+    }
+
+    private func videoActionButton(
+        _ label: String,
+        publication: PublicationState,
+        filled: Bool
+    ) -> some View {
+        Button {
+            onPost(title, caption, coverData, publication)
+        } label: {
+            Text(label)
+                .font(.wwav(15, weight: .regular, italic: true))
+                .tracking(2)
+                .foregroundStyle(filled ? theme.glow : theme.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .background(
+                    Capsule().fill(
+                        filled
+                            ? AnyShapeStyle(LinearGradient(
+                                colors: [theme.clay, theme.clayDeep],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ))
+                            : AnyShapeStyle(theme.sand.opacity(0.62))
+                    )
+                )
+                .overlay(Capsule().stroke(theme.accent.opacity(filled ? 0 : 0.28), lineWidth: 1))
+                .shadow(color: filled ? .black.opacity(0.18) : .clear, radius: 10, y: 4)
+        }
+        .buttonStyle(.plain)
+        .disabled(videoURL == nil)
+        .opacity(videoURL == nil ? 0.5 : 1.0)
     }
 }
 

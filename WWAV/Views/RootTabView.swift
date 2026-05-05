@@ -18,8 +18,10 @@ struct RootTabView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if !nav.hidesTabBar {
-                    TabBar(active: $nav.active)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    TabBar(active: $nav.active) {
+                        nav.homeFeedPing &+= 1
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
         }
@@ -52,12 +54,28 @@ struct AlbumDetailView: View {
         library.albumTracks(for: currentAlbum)
     }
 
+    private var playableTracks: [Track] {
+        tracks.filter(isPlayable)
+    }
+
+    private var albumIsActive: Bool {
+        guard let current = player.currentTrack else { return false }
+        return tracks.contains(where: { $0.id == current.id })
+    }
+
+    private var totalDurationLabel: String {
+        let seconds = Int(tracks.reduce(0) { $0 + $1.durationSeconds })
+        guard seconds > 0 else { return "\(tracks.count) tracks" }
+        let minutes = max(1, Int(round(Double(seconds) / 60.0)))
+        return "\(tracks.count) tracks · \(minutes)m"
+    }
+
     var body: some View {
         ZStack {
             theme.pageRadial.ignoresSafeArea()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 20) {
                     topBar
                     hero
 
@@ -78,7 +96,7 @@ struct AlbumDetailView: View {
     }
 
     private var topBar: some View {
-        HStack {
+        HStack(spacing: 12) {
             Button {
                 nav.albumViewerPost = nil
                 dismiss()
@@ -92,12 +110,24 @@ struct AlbumDetailView: View {
             }
             .buttonStyle(.plain)
 
+            VStack(alignment: .leading, spacing: 2) {
+                Text("album").wwavLabel(size: 9, tracking: 2.4)
+                Text(albumIsActive ? "playing from album" : totalDurationLabel)
+                    .font(.wwav(11, weight: .light, italic: true))
+                    .tracking(1)
+                    .foregroundStyle(theme.muted)
+            }
+
             Spacer()
 
-            Text("\(tracks.count) tracks")
-                .font(.wwav(11, weight: .light))
-                .tracking(1.6)
-                .foregroundStyle(theme.muted)
+            if albumIsActive {
+                Image(systemName: "waveform")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(theme.accent)
+                    .frame(width: 38, height: 38)
+                    .background(Circle().fill(theme.sand.opacity(0.70)))
+                    .overlay(Circle().stroke(theme.accent.opacity(0.20), lineWidth: 1))
+            }
         }
     }
 
@@ -106,14 +136,20 @@ struct AlbumDetailView: View {
             ZStack(alignment: .bottomLeading) {
                 FeedAlbumCover(url: currentAlbum.coverImageURL)
                 LinearGradient(
-                    colors: [.clear, .black.opacity(0.34)],
-                    startPoint: .center,
+                    colors: [.black.opacity(0.04), .black.opacity(0.56)],
+                    startPoint: .top,
                     endPoint: .bottom
                 )
                 .allowsHitTesting(false)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("album").wwavLabel(size: 10, tracking: 2.2)
-                        .foregroundStyle(theme.glow.opacity(0.88))
+                    HStack(spacing: 8) {
+                        Text("album").wwavLabel(size: 10, tracking: 2.2)
+                            .foregroundStyle(theme.glow.opacity(0.88))
+                        Text(totalDurationLabel)
+                            .font(.wwav(10, weight: .light))
+                            .tracking(1.1)
+                            .foregroundStyle(theme.glow.opacity(0.76))
+                    }
                     Text(currentAlbum.title)
                         .wwavTitle(size: 38)
                         .foregroundStyle(theme.glow)
@@ -131,12 +167,65 @@ struct AlbumDetailView: View {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(theme.muted.opacity(0.18), lineWidth: 1)
             )
+            .wwavShadow(.md)
+
+            HStack(spacing: 10) {
+                Button {
+                    playAlbum()
+                } label: {
+                    HStack(spacing: 8) {
+                        ZStack {
+                            Circle().fill(theme.glow.opacity(0.22))
+                            Triangle()
+                                .fill(theme.glow)
+                                .frame(width: 8, height: 10)
+                                .offset(x: 1)
+                        }
+                        .frame(width: 24, height: 24)
+                        Text(albumIsActive ? "resume album" : "play album")
+                            .font(.wwav(13, weight: .medium, italic: true))
+                            .tracking(1.5)
+                    }
+                    .foregroundStyle(theme.glow)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .background(
+                        Capsule().fill(
+                            LinearGradient(
+                                colors: [theme.clay, theme.clayDeep],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                    )
+                    .overlay(Capsule().stroke(theme.glow.opacity(0.18), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .disabled(playableTracks.isEmpty)
+                .opacity(playableTracks.isEmpty ? 0.45 : 1)
+
+                Text("\(playableTracks.count) playable")
+                    .font(.wwav(11, weight: .light, italic: true))
+                    .tracking(1)
+                    .foregroundStyle(theme.muted)
+                    .frame(minWidth: 96)
+                    .padding(.vertical, 13)
+                    .background(Capsule().fill(theme.sand.opacity(0.58)))
+                    .overlay(Capsule().stroke(theme.muted.opacity(0.18), lineWidth: 1))
+            }
         }
     }
 
     private var trackList: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("track list").wwavLabel(size: 10, tracking: 2)
+            HStack(alignment: .firstTextBaseline) {
+                Text("track list").wwavLabel(size: 10, tracking: 2)
+                Spacer()
+                Text(totalDurationLabel)
+                    .font(.wwav(10, weight: .light))
+                    .tracking(1)
+                    .foregroundStyle(theme.muted)
+            }
 
             if tracks.isEmpty {
                 EmptyState(
@@ -161,21 +250,33 @@ struct AlbumDetailView: View {
                             Rectangle()
                                 .fill(theme.muted.opacity(0.14))
                                 .frame(height: 1)
-                                .padding(.leading, 66)
+                                .padding(.leading, 76)
                         }
                     }
                 }
-                .background(RoundedRectangle(cornerRadius: 12).fill(theme.sand.opacity(0.62)))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.muted.opacity(0.20), lineWidth: 1))
+                .padding(6)
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(theme.sand.opacity(0.58)))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(theme.muted.opacity(0.20), lineWidth: 1))
             }
         }
+    }
+
+    private func playAlbum() {
+        if albumIsActive {
+            nav.albumViewerPost = nil
+            dismiss()
+            nav.active = .play
+            return
+        }
+        guard let first = playableTracks.first else { return }
+        play(first)
     }
 
     private func play(_ track: Track) {
         guard isPlayable(track) else { return }
         nav.albumViewerPost = nil
         dismiss()
-        nav.openPost(track, in: library, with: player)
+        nav.openPost(track, in: library, with: player, albumContext: currentAlbum)
     }
 
     private func isPlayable(_ track: Track) -> Bool {
@@ -220,9 +321,10 @@ private struct AlbumTrackRow: View {
         Button(action: onPlay) {
             HStack(spacing: 12) {
                 Text(String(format: "%02d", index))
-                    .font(.wwav(11, weight: .light))
+                    .font(.wwav(11, weight: active ? .medium : .light))
                     .foregroundStyle(active ? theme.accent : theme.muted)
-                    .frame(width: 30, alignment: .leading)
+                    .monospacedDigit()
+                    .frame(width: 34, alignment: .center)
 
                 ZStack {
                     LinearGradient(
@@ -232,12 +334,13 @@ private struct AlbumTrackRow: View {
                     )
                     CachedAsyncImage(url: track.thumbnailURL) { Color.clear }
                 }
-                .frame(width: 44, height: 44)
+                .frame(width: 50, height: 50)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(theme.muted.opacity(0.14), lineWidth: 1))
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(track.title)
-                        .font(.wwav(15, weight: .medium))
+                        .font(.wwav(15, weight: active ? .semibold : .medium))
                         .foregroundStyle(theme.ink)
                         .lineLimit(1)
                     Text(rowSubtitle)
@@ -249,16 +352,27 @@ private struct AlbumTrackRow: View {
 
                 Spacer(minLength: 0)
 
+                if let duration = durationText {
+                    Text(duration)
+                        .font(.wwav(10, weight: .light))
+                        .monospacedDigit()
+                        .foregroundStyle(theme.muted)
+                }
+
                 ZStack {
                     Circle().fill(active ? theme.accent : theme.muted.opacity(0.14))
-                    Triangle()
-                        .fill(active ? theme.glow : theme.muted)
-                        .frame(width: 8, height: 10)
-                        .offset(x: 1)
+                    Image(systemName: active ? "speaker.wave.2.fill" : "play.fill")
+                        .font(.system(size: active ? 10 : 9, weight: .semibold))
+                        .foregroundStyle(active ? theme.glow : theme.muted)
                 }
                 .frame(width: 32, height: 32)
             }
-            .padding(12)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(active ? theme.glow.opacity(0.18) : Color.clear)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -266,12 +380,17 @@ private struct AlbumTrackRow: View {
 
     private var rowSubtitle: String {
         if case .ready = track.status {
-            return "@\(track.handle) · \(formatDuration(track.durationSeconds))"
+            return "@\(track.handle)"
         }
         if case .separating(let p) = track.status {
             return "separating · \(Int(p * 100))%"
         }
         return "@\(track.handle)"
+    }
+
+    private var durationText: String? {
+        guard case .ready = track.status else { return nil }
+        return formatDuration(track.durationSeconds)
     }
 
     private func formatDuration(_ duration: Double) -> String {

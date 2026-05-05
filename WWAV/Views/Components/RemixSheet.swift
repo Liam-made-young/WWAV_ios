@@ -213,6 +213,7 @@ struct RemixSheet: View {
     @State private var composerCoverImage: UIImage? = nil
     @State private var isPosting: Bool = false
     @State private var postSuccess: Bool = false
+    @State private var completionMessage: String = ""
 
     private let audioTypes: [UTType] = [.audio, .wav, .mp3, .mpeg4Audio, .aiff]
 
@@ -554,7 +555,7 @@ struct RemixSheet: View {
             HStack(spacing: 8) {
                 Image(systemName: "arrow.up.forward")
                     .font(.system(size: 12, weight: .medium))
-                Text("post remix")
+                Text("finish remix")
                     .font(.wwav(15, weight: .regular, italic: true))
                     .tracking(1.5)
             }
@@ -574,7 +575,7 @@ struct RemixSheet: View {
 
     private var composerBlock: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("post remix").wwavLabel(size: 11, tracking: 2.5)
+            Text("remix destination").wwavLabel(size: 11, tracking: 2.5)
 
             // Cover art picker
             HStack(spacing: 14) {
@@ -644,41 +645,57 @@ struct RemixSheet: View {
                     .overlay(RoundedRectangle(cornerRadius: 14).stroke(theme.muted.opacity(0.40), lineWidth: 1))
             }
 
-            // Submit button
-            Button {
-                submitRemix()
-            } label: {
-                HStack(spacing: 6) {
-                    if isPosting {
-                        ProgressView()
-                            .tint(theme.glow)
-                            .scaleEffect(0.7)
-                    } else if postSuccess {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 13, weight: .semibold))
-                    } else {
-                        Image(systemName: "arrow.up.forward")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    Text(postSuccess ? "posted!" : isPosting ? "posting…" : "post remix")
-                        .font(.wwav(15, weight: .regular, italic: true))
-                        .tracking(1.5)
-                }
-                .foregroundStyle(theme.glow)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-                .background(
-                    Capsule().fill(
-                        LinearGradient(colors: [theme.clay, theme.clayDeep],
-                                       startPoint: .top, endPoint: .bottom)
-                    )
-                )
-                .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+            VStack(spacing: 10) {
+                remixSubmitButton("save to library", publication: .draft, filled: false)
+                remixSubmitButton("post to feed", publication: .published, filled: true)
             }
-            .buttonStyle(.plain)
-            .disabled(isPosting || postSuccess)
-            .opacity(isPosting ? 0.7 : 1.0)
         }
+    }
+
+    private func remixSubmitButton(
+        _ label: String,
+        publication: PublicationState,
+        filled: Bool
+    ) -> some View {
+        Button {
+            submitRemix(publication: publication)
+        } label: {
+            HStack(spacing: 6) {
+                if isPosting {
+                    ProgressView()
+                        .tint(filled ? theme.glow : theme.accent)
+                        .scaleEffect(0.7)
+                } else if postSuccess {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 13, weight: .semibold))
+                } else if filled {
+                    Image(systemName: "arrow.up.forward")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                Text(postSuccess ? completionMessage : isPosting ? "working..." : label)
+                    .font(.wwav(15, weight: .regular, italic: true))
+                    .tracking(1.5)
+            }
+            .foregroundStyle(filled ? theme.glow : theme.accent)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background(
+                Capsule().fill(
+                    filled
+                        ? AnyShapeStyle(LinearGradient(
+                            colors: [theme.clay, theme.clayDeep],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ))
+                        : AnyShapeStyle(theme.sand.opacity(0.62))
+                )
+            )
+            .overlay(Capsule().stroke(theme.accent.opacity(filled ? 0 : 0.28), lineWidth: 1))
+            .shadow(color: filled ? .black.opacity(0.18) : .clear, radius: 10, y: 4)
+        }
+        .buttonStyle(.plain)
+        .disabled(isPosting || postSuccess)
+        .opacity(isPosting ? 0.7 : 1.0)
     }
 
     // MARK: – Actions
@@ -746,7 +763,7 @@ struct RemixSheet: View {
         activeOverdubStem = nil
     }
 
-    private func submitRemix() {
+    private func submitRemix(publication: PublicationState) {
         guard !isPosting else { return }
         isPosting = true
         preview.stop()
@@ -772,12 +789,14 @@ struct RemixSheet: View {
             bio: bio,
             newStems: newStems,
             cover: cover,
-            token: token
+            token: token,
+            publication: publication
         )
 
         withAnimation(.easeInOut(duration: 0.3)) {
             isPosting = false
             postSuccess = true
+            completionMessage = publication == .published ? "posted!" : "saved!"
         }
 
         // Dismiss after a short beat so the user sees "posted!".

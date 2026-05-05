@@ -104,16 +104,13 @@ struct SettingsSheet: View {
                 Text("sign out")
                     .font(.wwav(13, weight: .regular, italic: true))
                     .tracking(2)
-                    .foregroundStyle(theme.glow)
+                    .foregroundStyle(theme.muted)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
-                    .background(
-                        Capsule().fill(LinearGradient(
-                            colors: [theme.clay, theme.clayDeep],
-                            startPoint: .top, endPoint: .bottom
-                        ))
+                    .background(Capsule().fill(theme.muted.opacity(WWAVOpacity.veil)))
+                    .overlay(
+                        Capsule().stroke(theme.muted.opacity(WWAVOpacity.muted), lineWidth: 1)
                     )
-                    .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
             }
             .buttonStyle(.plain)
         }
@@ -130,6 +127,17 @@ private struct PaletteRow: View {
         Button(action: onTap) {
             HStack(spacing: 14) {
                 swatch
+                    .background(
+                        Group {
+                            if active {
+                                Circle()
+                                    .fill(palette.accent.opacity(0.30))
+                                    .frame(width: 50, height: 26)
+                                    .blur(radius: 8)
+                                    .scaleEffect(1.4)
+                            }
+                        }
+                    )
                 VStack(alignment: .leading, spacing: 2) {
                     Text(palette.displayName)
                         .font(.wwav(16, weight: .light, italic: true))
@@ -160,8 +168,8 @@ private struct PaletteRow: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 14)
-                    .stroke(active ? theme.accent.opacity(0.7) : theme.muted.opacity(0.2),
-                            lineWidth: active ? 1.5 : 1)
+                    .stroke(active ? theme.accent : theme.muted.opacity(WWAVOpacity.soft),
+                            lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -175,7 +183,7 @@ private struct PaletteRow: View {
             Circle().fill(palette.accent).frame(width: 22, height: 22)
             Circle().fill(palette.glow).frame(width: 14, height: 14)
                 .offset(x: 9)
-                .overlay(Circle().stroke(palette.clayDeep.opacity(0.2), lineWidth: 0.5)
+                .overlay(Circle().stroke(palette.clayDeep.opacity(0.30), lineWidth: 0.5)
                             .frame(width: 14, height: 14)
                             .offset(x: 9))
         }
@@ -232,8 +240,8 @@ private struct TypefaceRow: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 14)
-                    .stroke(active ? theme.accent.opacity(0.7) : theme.muted.opacity(0.2),
-                            lineWidth: active ? 1.5 : 1)
+                    .stroke(active ? theme.accent : theme.muted.opacity(WWAVOpacity.soft),
+                            lineWidth: 1)
             )
         }
         .buttonStyle(.plain)

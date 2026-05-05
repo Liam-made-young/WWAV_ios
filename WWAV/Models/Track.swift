@@ -1,6 +1,6 @@
 import Foundation
 
-enum StemKind: String, CaseIterable, Codable, Identifiable, Hashable {
+enum StemKind: String, CaseIterable, Codable, Identifiable, Hashable, Sendable {
     case vox, bass, drum, synth
     var id: String { rawValue }
     /// Demucs canonical filenames are vocals/bass/drums/other.
@@ -117,11 +117,27 @@ enum PostKind: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum PublicationState: String, Codable, Equatable {
+    case draft
+    case published
+
+    var label: String {
+        switch self {
+        case .draft: return "draft"
+        case .published: return "live"
+        }
+    }
+}
+
 struct Track: Identifiable, Codable, Equatable {
     var id: UUID = .init()
     /// Which of the four post types this is. Defaults to `.music` so older
     /// persisted libraries (without this field) decode as music posts.
     var kind: PostKind = .music
+    /// Drafts live in the user's profile library only. Published tracks are
+    /// eligible for feed/profile/social surfaces. Older persisted rows decode
+    /// as `.published` so existing posts keep their current visibility.
+    var publication: PublicationState = .published
     var title: String
     var artist: String
     var handle: String
@@ -193,6 +209,9 @@ struct Track: Identifiable, Codable, Equatable {
     /// True when this track is a remix of another track.
     var isRemix: Bool { parentTrackId != nil || parentRemoteTrackId != nil }
 
+    var isPublished: Bool { publication == .published }
+    var isDraft: Bool { publication == .draft }
+
     /// Resolved cover-art URL ready for `AsyncImage`, or nil if no cover.
     var coverImageURL: URL? {
         Track.resolveImageURL(coverArtUrl)
@@ -253,7 +272,7 @@ struct Track: Identifiable, Codable, Equatable {
     // existing music tracks survive the upgrade.
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, title, artist, handle, authorUserId, authorProfilePicture, bio
+        case id, kind, publication, title, artist, handle, authorUserId, authorProfilePicture, bio
         case sourceURL, sourceObjectKey, remoteTrackId, userUploadId, publishedTrackId
         case coverArtUrl, stems, stemObjectKeys
         case imageUrls, videoURL, videoDuration, remotePostId, textBody, albumTrackIds
@@ -265,6 +284,7 @@ struct Track: Identifiable, Codable, Equatable {
     init(
         id: UUID = .init(),
         kind: PostKind = .music,
+        publication: PublicationState = .published,
         title: String,
         artist: String,
         handle: String,
@@ -299,6 +319,7 @@ struct Track: Identifiable, Codable, Equatable {
     ) {
         self.id = id
         self.kind = kind
+        self.publication = publication
         self.title = title
         self.artist = artist
         self.handle = handle
@@ -336,6 +357,7 @@ struct Track: Identifiable, Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.id              = try c.decode(UUID.self, forKey: .id)
         self.kind            = try c.decodeIfPresent(PostKind.self, forKey: .kind) ?? .music
+        self.publication     = try c.decodeIfPresent(PublicationState.self, forKey: .publication) ?? .published
         self.title           = try c.decode(String.self, forKey: .title)
         self.artist          = try c.decode(String.self, forKey: .artist)
         self.handle          = try c.decode(String.self, forKey: .handle)

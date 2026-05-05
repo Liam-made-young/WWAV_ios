@@ -29,45 +29,23 @@ struct VideoPostPlayer: View {
             if let player = controller.player {
                 VideoLayerView(player: player)
                     .ignoresSafeArea()
-                    .overlay(alignment: .top) {
-                        LinearGradient(
-                            colors: [.black.opacity(0.72), .clear],
-                            startPoint: .top, endPoint: .bottom
-                        )
-                        .frame(height: 180)
-                        .allowsHitTesting(false)
-                        .ignoresSafeArea(edges: .top)
-                    }
-                    .overlay(alignment: .bottom) {
-                        LinearGradient(
-                            colors: [.clear, .black.opacity(0.84)],
-                            startPoint: .top, endPoint: .bottom
-                        )
-                        .frame(height: 320)
-                        .allowsHitTesting(false)
-                        .ignoresSafeArea(edges: .bottom)
-                    }
             } else {
                 unavailableView
             }
 
             if controller.player != nil {
-                tapZones
+                tapLayer
                 centerPlayOverlay
                 bufferingOverlay
-                seekFeedbackOverlay
                 if controller.isScrubbing {
                     scrubTimecode.transition(.opacity)
                 }
-                if controller.chromeVisible || showingComments {
-                    chrome.transition(.opacity)
-                }
+                chrome.transition(.opacity)
             }
         }
         .animation(.easeInOut(duration: 0.25), value: controller.chromeVisible)
         .animation(.spring(response: 0.30, dampingFraction: 0.78), value: controller.isPlaying)
         .animation(.easeInOut(duration: 0.20), value: controller.isBuffering)
-        .animation(.easeInOut(duration: 0.18), value: controller.seekFeedback)
         .animation(.easeInOut(duration: 0.18), value: controller.isScrubbing)
         .animation(.spring(response: 0.32, dampingFraction: 0.86), value: showingComments)
         .onAppear { controller.play() }
@@ -93,38 +71,15 @@ struct VideoPostPlayer: View {
         .frame(maxWidth: .infinity)
     }
 
-    // MARK: – Three tap zones (-10s / play-pause / +10s)
+    // MARK: – Tap to play / pause
 
-    private var tapZones: some View {
-        GeometryReader { geo in
-            HStack(spacing: 0) {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        controller.seek(by: -10)
-                        controller.flashSeek(.backward)
-                        controller.revealChrome()
-                    }
-                    .frame(width: geo.size.width / 3)
-
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        controller.togglePlay()
-                        controller.revealChrome()
-                    }
-                    .frame(width: geo.size.width / 3)
-
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        controller.seek(by: 10)
-                        controller.flashSeek(.forward)
-                        controller.revealChrome()
-                    }
-                    .frame(width: geo.size.width / 3)
+    private var tapLayer: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onTapGesture {
+                controller.togglePlay()
+                controller.revealChrome()
             }
-        }
         .ignoresSafeArea()
     }
 
@@ -159,37 +114,6 @@ struct VideoPostPlayer: View {
                 .scaleEffect(1.4)
                 .allowsHitTesting(false)
         }
-    }
-
-    // MARK: – Seek feedback (±10s bubble shown briefly)
-
-    @ViewBuilder
-    private var seekFeedbackOverlay: some View {
-        if let direction = controller.seekFeedback {
-            GeometryReader { geo in
-                seekBubble(direction: direction)
-                    .position(
-                        x: direction == .backward ? geo.size.width * 0.22 : geo.size.width * 0.78,
-                        y: geo.size.height * 0.5
-                    )
-            }
-            .transition(.opacity)
-            .allowsHitTesting(false)
-        }
-    }
-
-    private func seekBubble(direction: SeekDirection) -> some View {
-        VStack(spacing: 4) {
-            Image(systemName: direction == .backward ? "gobackward.10" : "goforward.10")
-                .font(.system(size: 30, weight: .semibold))
-            Text(direction == .backward ? "−10s" : "+10s")
-                .font(.wwav(12, weight: .medium))
-                .monospacedDigit()
-        }
-        .foregroundStyle(.white)
-        .padding(22)
-        .background(.ultraThinMaterial, in: Circle())
-        .shadow(color: .black.opacity(0.35), radius: 14, y: 4)
     }
 
     // MARK: – Floating timecode while scrubbing
@@ -462,16 +386,16 @@ struct VideoPostPlayer: View {
     // MARK: – Scrubber row (timecodes + bar)
 
     private var scrubberRow: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             scrubber
             HStack {
                 Text(formatTime(displayedTime))
-                    .font(.wwav(11, weight: .medium))
+                    .font(.wwav(10, weight: .medium))
                     .monospacedDigit()
                     .foregroundStyle(.white.opacity(0.88))
                 Spacer()
                 Text(formatTime(controller.duration))
-                    .font(.wwav(11, weight: .medium))
+                    .font(.wwav(10, weight: .medium))
                     .monospacedDigit()
                     .foregroundStyle(.white.opacity(0.62))
             }
@@ -487,23 +411,31 @@ struct VideoPostPlayer: View {
     private var scrubber: some View {
         GeometryReader { geo in
             let fraction = controller.isScrubbing ? controller.scrubFraction : controller.progress
-            let progressX = max(0, geo.size.width * fraction)
-            let barHeight: CGFloat = controller.isScrubbing ? 5 : 3
-            let thumbDiameter: CGFloat = controller.isScrubbing ? 14 : 10
+            let trackInset: CGFloat = 8
+            let trackWidth = max(1, geo.size.width - trackInset * 2)
+            let progressX = trackInset + trackWidth * max(0, min(1, fraction))
+            let barHeight: CGFloat = controller.isScrubbing ? 5 : 4
+            let thumbDiameter: CGFloat = controller.isScrubbing ? 16 : 12
 
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(.white.opacity(0.22))
+                    .fill(.black.opacity(0.28))
+                    .frame(height: 22)
+
+                Capsule()
+                    .fill(.white.opacity(0.24))
                     .frame(height: barHeight)
+                    .padding(.horizontal, trackInset)
 
                 Capsule()
                     .fill(
                         LinearGradient(
-                            colors: [.white, .white.opacity(0.78)],
+                            colors: [.white, theme.accent.opacity(0.88)],
                             startPoint: .leading, endPoint: .trailing
                         )
                     )
-                    .frame(width: progressX, height: barHeight)
+                    .frame(width: max(0, progressX - trackInset), height: barHeight)
+                    .padding(.leading, trackInset)
 
                 Circle()
                     .fill(.white)
@@ -511,23 +443,23 @@ struct VideoPostPlayer: View {
                     .shadow(color: .black.opacity(0.35), radius: 4, y: 1)
                     .offset(x: progressX - thumbDiameter / 2)
             }
-            .frame(height: 14)
+            .frame(height: 22)
             .contentShape(Rectangle().inset(by: -10))
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { v in
                         controller.beginScrub()
-                        let newFraction = max(0, min(1, v.location.x / geo.size.width))
+                        let newFraction = max(0, min(1, (v.location.x - trackInset) / trackWidth))
                         controller.scrubFraction = newFraction
                         controller.revealChrome()
                     }
                     .onEnded { v in
-                        let newFraction = max(0, min(1, v.location.x / geo.size.width))
+                        let newFraction = max(0, min(1, (v.location.x - trackInset) / trackWidth))
                         controller.endScrub(fraction: newFraction)
                     }
             )
         }
-        .frame(height: 14)
+        .frame(height: 22)
     }
 
     // MARK: – Time formatting
@@ -556,16 +488,15 @@ enum SeekDirection: Equatable {
 
 // MARK: – VideoLayerView / PlayerContainerView
 
-/// Plain UIView host for AVPlayerLayer so the video fills the view edge to
-/// edge with `.resizeAspectFill`. AVKit's `VideoPlayer` defaults to a
-/// letterboxed look that doesn't match the social-video surface.
+/// Plain UIView host for AVPlayerLayer. Aspect-fit keeps 16:9 and 9:16 clips
+/// fully visible instead of cropping the actual video frame.
 private struct VideoLayerView: UIViewRepresentable {
     let player: AVPlayer
 
     func makeUIView(context: Context) -> PlayerContainerView {
         let v = PlayerContainerView()
         v.playerLayer.player = player
-        v.playerLayer.videoGravity = .resizeAspectFill
+        v.playerLayer.videoGravity = .resizeAspect
         return v
     }
 
@@ -573,7 +504,7 @@ private struct VideoLayerView: UIViewRepresentable {
         if uiView.playerLayer.player !== player {
             uiView.playerLayer.player = player
         }
-        uiView.playerLayer.videoGravity = .resizeAspectFill
+        uiView.playerLayer.videoGravity = .resizeAspect
     }
 }
 
@@ -595,7 +526,6 @@ final class VideoController: ObservableObject {
     @Published private(set) var duration: Double = 0
     @Published private(set) var isBuffering: Bool = false
     @Published private(set) var isScrubbing: Bool = false
-    @Published private(set) var seekFeedback: SeekDirection? = nil
 
     let player: AVPlayer?
 
@@ -604,7 +534,6 @@ final class VideoController: ObservableObject {
     private var timeObserverToken: Any?
     private var endObserver: NSObjectProtocol?
     private var fadeTask: Task<Void, Never>?
-    private var seekFeedbackTask: Task<Void, Never>?
     private var timeControlObservation: NSKeyValueObservation?
 
     init(url: URL?) {
@@ -682,7 +611,6 @@ final class VideoController: ObservableObject {
         player?.pause()
         isPlaying = false
         fadeTask?.cancel()
-        seekFeedbackTask?.cancel()
         if let token = timeObserverToken {
             player?.removeTimeObserver(token)
             timeObserverToken = nil
@@ -693,25 +621,6 @@ final class VideoController: ObservableObject {
         }
         timeControlObservation?.invalidate()
         timeControlObservation = nil
-    }
-
-    // MARK: – Seek
-
-    func seek(by seconds: Double) {
-        guard let player, duration > 0 else { return }
-        let current = player.currentTime().seconds
-        let target = max(0, min(duration, current + seconds))
-        player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
-    }
-
-    func flashSeek(_ direction: SeekDirection) {
-        seekFeedback = direction
-        seekFeedbackTask?.cancel()
-        seekFeedbackTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 700_000_000)
-            guard !Task.isCancelled else { return }
-            self?.seekFeedback = nil
-        }
     }
 
     // MARK: – Scrub

@@ -13,8 +13,15 @@ protocol StorageService {
     func putFile(at sourceURL: URL, key: String, contentType: String) async throws -> URL
     /// Returns a local file URL for the given key, downloading if necessary.
     func localURL(for key: String) async throws -> URL
+    /// Returns the current local cache URL if the object is already present.
+    /// This is synchronous so persisted file references can be repaired during launch.
+    func cachedURLIfPresent(for key: String) -> URL?
     /// Removes the object.
     func delete(key: String) async throws
+}
+
+extension StorageService {
+    func cachedURLIfPresent(for key: String) -> URL? { nil }
 }
 
 enum StorageError: LocalizedError {
@@ -44,6 +51,11 @@ final class LocalDiskStorage: StorageService {
         )
         self.root = (base ?? URL(fileURLWithPath: NSTemporaryDirectory()))
             .appendingPathComponent("wwav/objects", isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+
+    init(root: URL) {
+        self.root = root
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
 
@@ -80,6 +92,11 @@ final class LocalDiskStorage: StorageService {
             throw StorageError.notFound(key)
         }
         return path
+    }
+
+    func cachedURLIfPresent(for key: String) -> URL? {
+        let path = url(for: key)
+        return FileManager.default.fileExists(atPath: path.path) ? path : nil
     }
 
     func delete(key: String) async throws {
@@ -160,6 +177,11 @@ final class S3Storage: StorageService {
         }
         try FileManager.default.moveItem(at: tmp, to: local)
         return local
+    }
+
+    func cachedURLIfPresent(for key: String) -> URL? {
+        let local = cacheURL(for: key)
+        return FileManager.default.fileExists(atPath: local.path) ? local : nil
     }
 
     func delete(key: String) async throws {

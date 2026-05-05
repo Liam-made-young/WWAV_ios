@@ -21,6 +21,28 @@ final class TrackModelTests: XCTestCase {
         )
     }
 
+    func testPersistedLocalObjectKeyExtractsStableStorageKey() {
+        let raw = "file:///Users/liam/Library/Developer/CoreSimulator/Devices/DEVICE/data/Containers/Data/Application/OLD/Library/Application%20Support/wwav/objects/uploads/track-1/image%201.jpg"
+
+        XCTAssertEqual(
+            TrackLibrary.persistedLocalObjectKey(from: raw),
+            "uploads/track-1/image 1.jpg"
+        )
+    }
+
+    func testLocalDiskStorageReportsCurrentCachedURL() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wwav-storage-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = LocalDiskStorage(root: root)
+        let key = "uploads/track-1/cover.jpg"
+
+        let saved = try await storage.put(Data([1, 2, 3]), key: key, contentType: "image/jpeg")
+
+        XCTAssertEqual(storage.cachedURLIfPresent(for: key), saved)
+        XCTAssertNil(storage.cachedURLIfPresent(for: "uploads/missing.jpg"))
+    }
+
     func testRemoteUploadDecodesBackendShapeVariants() throws {
         let json = """
         {
@@ -136,6 +158,42 @@ final class TrackModelTests: XCTestCase {
             "11111111-1111-1111-1111-111111111111",
             "track_remote",
         ])
+    }
+
+    func testRemotePostDecodesStoryShape() throws {
+        let json = """
+        {
+          "id": 21,
+          "kind": "story",
+          "title": "story",
+          "images": ["/api/images/story.jpg"],
+          "User": { "id": 3, "username": "story_user" },
+          "created_at": "2026-05-01T12:34:56.000Z"
+        }
+        """.data(using: .utf8)!
+
+        let post = try JSONDecoder().decode(WWAVRemotePost.self, from: json)
+
+        XCTAssertEqual(post.kind, "story")
+        XCTAssertEqual(post.images?.first, "/api/images/story.jpg")
+        XCTAssertEqual(post.author?.id, 3)
+        XCTAssertEqual(post.author?.displayName, "story_user")
+        XCTAssertNotNil(post.parsedCreatedAt)
+    }
+
+    func testStoryCodablePreservesRemotePostId() throws {
+        let story = WWAVStory(
+            authorName: "tester",
+            handle: "tester",
+            authorProfilePicture: nil,
+            imageUrl: "/api/images/story.jpg",
+            remotePostId: 21
+        )
+
+        let decoded = try JSONDecoder().decode(WWAVStory.self, from: JSONEncoder().encode(story))
+
+        XCTAssertEqual(decoded.remotePostId, 21)
+        XCTAssertEqual(decoded.imageUrl, "/api/images/story.jpg")
     }
 
     func testAlbumTrackCodablePreservesTracklist() throws {

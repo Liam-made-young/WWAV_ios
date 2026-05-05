@@ -4,6 +4,15 @@ import Combine
 
 // MARK: – Events flowing from broadcaster → listeners
 
+struct LiveRadioMessage: Identifiable, Equatable {
+    var id: UUID = .init()
+    var sessionId: UUID
+    var senderName: String
+    var senderHandle: String
+    var text: String
+    var sentAt: Date = .init()
+}
+
 /// Every event type the broadcast bus can emit.
 enum LiveRadioEvent {
     /// The host started broadcasting.
@@ -18,6 +27,8 @@ enum LiveRadioEvent {
     case songPosition(songId: UUID, elapsed: Double, sessionId: UUID, hostClock: Date)
     /// The song finished (or was interrupted by the host).
     case songEnded(sessionId: UUID)
+    /// A listener sent a message into the live broadcast.
+    case listenerMessage(LiveRadioMessage)
 }
 
 // MARK: – Transport protocol
@@ -39,6 +50,7 @@ protocol LiveRadioTransport: AnyObject {
     func sendSongStart(songId: UUID, stems: StemBundle, sessionId: UUID)
     func sendSongPosition(songId: UUID, elapsed: Double, sessionId: UUID)
     func sendSongEnd(sessionId: UUID)
+    func sendListenerMessage(_ message: LiveRadioMessage)
 }
 
 // MARK: – In-process implementation
@@ -82,5 +94,9 @@ final class InProcessLiveRadioTransport: LiveRadioTransport, ObservableObject {
 
     func sendSongEnd(sessionId: UUID) {
         subject.send(.songEnded(sessionId: sessionId))
+    }
+
+    func sendListenerMessage(_ message: LiveRadioMessage) {
+        subject.send(.listenerMessage(message))
     }
 }

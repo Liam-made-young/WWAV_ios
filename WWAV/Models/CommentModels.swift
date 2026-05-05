@@ -68,8 +68,14 @@ struct WWAVComment: Codable, Identifiable, Equatable {
     }
 
     func encode(to encoder: Encoder) throws {
-        // Encoding only used for local persistence; round-trip not required
-        // since the server is authoritative. No-op to satisfy Codable.
+        var c = encoder.container(keyedBy: RootCodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(text, forKey: .text)
+        try c.encodeIfPresent(userId, forKey: .userId)
+        try c.encodeIfPresent(parentId, forKey: .parentId)
+        try c.encodeIfPresent(createdAt, forKey: .createdAt)
+        try c.encodeIfPresent(username, forKey: .username)
+        try c.encodeIfPresent(profilePicture, forKey: .profilePicture)
     }
 
     /// Resolved profile picture URL ready for `AsyncImage`.

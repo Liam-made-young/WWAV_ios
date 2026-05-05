@@ -33,6 +33,9 @@ final class AppNavigation: ObservableObject {
     @Published var imageViewerPost: Track?
     /// Album currently expanded into its track-list view.
     @Published var albumViewerPost: Track?
+    /// Album that supplied the currently playing music track, if playback
+    /// was started from an album detail view.
+    @Published var albumPlaybackPost: Track?
     /// Upload kind requested by another surface, such as the feed composer.
     /// `UploadView` consumes and clears this when it becomes visible.
     @Published var requestedUploadKind: PostKind?
@@ -41,6 +44,10 @@ final class AppNavigation: ObservableObject {
     /// When non-nil, PlayView renders the live radio listener experience
     /// for this session instead of the normal stem player.
     @Published var tunedInSessionId: UUID?
+    /// Bumped every time the home tab is tapped, regardless of the current
+    /// active tab. HomeView observes this to scroll to the top of the feed
+    /// and trigger a forced refresh.
+    @Published var homeFeedPing: Int = 0
 
     var hidesTabBar: Bool {
         active == .play && activePost?.kind == .video
@@ -68,6 +75,7 @@ final class AppNavigation: ObservableObject {
         activePost = nil
         imageViewerPost = nil
         albumViewerPost = nil
+        albumPlaybackPost = nil
         active = .home
     }
 
@@ -75,6 +83,7 @@ final class AppNavigation: ObservableObject {
     func tuneIn(session: RadioSession) {
         tunedInSessionId = session.id
         activePost = nil         // Clear any video post that may be showing.
+        albumPlaybackPost = nil
         active = .play
     }
 
@@ -96,11 +105,18 @@ final class AppNavigation: ObservableObject {
     /// already the full post).
     func openPost(_ track: Track,
                   in library: TrackLibrary,
-                  with player: StemPlayerEngine) {
+                  with player: StemPlayerEngine,
+                  albumContext: Track? = nil) {
         switch track.kind {
         case .music:
             active = .play
             activePost = track
+            albumPlaybackPost = albumContext
+            if player.currentTrack?.id == track.id {
+                player.resume()
+                library.incrementPlays(of: track.id)
+                return
+            }
             // Pause the previous track immediately and flip the engine
             // into "preparing" so the play view shows a loading overlay
             // for the entire duration of the stem download — instead of
@@ -125,6 +141,7 @@ final class AppNavigation: ObservableObject {
         case .video:
             active = .play
             activePost = track
+            albumPlaybackPost = nil
             // Pause the stem engine if it was running so audio doesn't fight
             // the video soundtrack.
             if player.isPlaying { player.pause() }
@@ -135,11 +152,13 @@ final class AppNavigation: ObservableObject {
             library.incrementPlays(of: track.id)
         case .image:
             imageViewerPost = track
+            albumPlaybackPost = nil
             library.incrementPlays(of: track.id)
         case .album:
             albumViewerPost = track
             library.incrementPlays(of: track.id)
         case .text, .radio:
+            albumPlaybackPost = nil
             break
         }
     }

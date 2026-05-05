@@ -113,7 +113,7 @@ private struct WWAVTitle: ViewModifier {
         content
             .font(.wwav(size, weight: .light, italic: italic))
             .foregroundStyle(theme.ink)
-            .lineSpacing(0)
+            .lineSpacing(-2)
     }
 }
 

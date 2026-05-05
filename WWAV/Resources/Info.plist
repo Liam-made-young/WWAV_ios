@@ -20,6 +20,8 @@
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>NSCameraUsageDescription</key>
+	<string>WWAV uses your camera to post stories and attach photos to text posts.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>WWAV records new tracks for stem separation.</string>
 	<key>UIApplicationSceneManifest</key>

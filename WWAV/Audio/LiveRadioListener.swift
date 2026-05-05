@@ -36,6 +36,8 @@ final class LiveRadioListener: ObservableObject {
     @Published private(set) var talkLevel: Float = 0
     /// Whether we're currently tuned in.
     @Published private(set) var isTuned: Bool = false
+    /// Chat messages sent through the tuned live broadcast.
+    @Published private(set) var messages: [LiveRadioMessage] = []
 
     // MARK: – Dependencies / config
 
@@ -48,6 +50,7 @@ final class LiveRadioListener: ObservableObject {
     private let talkEngine = AVAudioEngine()
     private let talkPlayer = AVAudioPlayerNode()
     private var talkFormat: AVAudioFormat?
+    private var talkPipelineInstalled = false
 
     // MARK: – Song audio pipeline (own engine so it doesn't fight StemPlayerEngine)
 
@@ -63,6 +66,7 @@ final class LiveRadioListener: ObservableObject {
     private var lastKnownElapsed: Double = 0
     private var lastKnownHostClock: Date = Date()
     private var lastSongId: UUID?
+    private var pendingSongId: UUID?
 
     // MARK: – Subscriptions
 
@@ -79,9 +83,13 @@ final class LiveRadioListener: ObservableObject {
     // MARK: – Tune in / out
 
     func tuneIn(sessionId: UUID) {
-        guard !isTuned else { return }
+        if isTuned {
+            guard self.sessionId != sessionId else { return }
+            tuneOut()
+        }
         self.sessionId = sessionId
         isTuned = true
+        messages = []
         setupTalkPipeline()
         subscribe()
     }
@@ -94,18 +102,23 @@ final class LiveRadioListener: ObservableObject {
         isTuned = false
         mode = .talk
         talkLevel = 0
+        messages = []
         sessionId = nil
+        pendingSongId = nil
     }
 
     // MARK: – Talk pipeline
 
     private func setupTalkPipeline() {
-        talkEngine.attach(talkPlayer)
-        // Use the default output format; we'll re-connect if the incoming
-        // buffer format differs.
-        let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
-        talkFormat = format
-        talkEngine.connect(talkPlayer, to: talkEngine.mainMixerNode, format: format)
+        if !talkPipelineInstalled {
+            talkEngine.attach(talkPlayer)
+            // Use the default output format; we'll re-connect if the incoming
+            // buffer format differs.
+            let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
+            talkFormat = format
+            talkEngine.connect(talkPlayer, to: talkEngine.mainMixerNode, format: format)
+            talkPipelineInstalled = true
+        }
         talkEngine.prepare()
         do {
             try talkEngine.start()
@@ -240,14 +253,36 @@ final class LiveRadioListener: ObservableObject {
             lastSongId = songId
             lastKnownElapsed = elapsed
             lastKnownHostClock = hostClock
+            if !isPlayingSong(songId), pendingSongId != songId {
+                pendingSongId = songId
+                let adjustedElapsed = elapsed + max(0, Date().timeIntervalSince(hostClock))
+                Task { @MainActor [weak self] in
+                    await self?.startSongFromPosition(songId: songId, elapsed: adjustedElapsed)
+                }
+            }
 
         case .songEnded(let eventSid) where eventSid == sid:
             stopSong()
             mode = .talk
 
+        case .listenerMessage(let message) where message.sessionId == sid:
+            appendMessage(message)
+
         default:
             break
         }
+    }
+
+    func sendMessage(text: String, fromName: String, fromHandle: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let sid = sessionId else { return }
+        let message = LiveRadioMessage(
+            sessionId: sid,
+            senderName: fromName.isEmpty ? "listener" : fromName,
+            senderHandle: fromHandle,
+            text: trimmed
+        )
+        transport.sendListenerMessage(message)
     }
 
     // MARK: – Talk buffer playback
@@ -273,12 +308,39 @@ final class LiveRadioListener: ObservableObject {
 
     // MARK: – Helpers
 
+    private func isPlayingSong(_ songId: UUID) -> Bool {
+        if case .song(let track) = mode {
+            return track.id == songId
+        }
+        return false
+    }
+
+    private func startSongFromPosition(songId: UUID, elapsed: Double) async {
+        defer { pendingSongId = nil }
+        guard !isPlayingSong(songId),
+              let track = trackCandidate(id: songId) else { return }
+        let requestedAt = Date()
+        guard let primed = await library.prepareForPlayback(track) else { return }
+        let adjustedElapsed = elapsed + max(0, Date().timeIntervalSince(requestedAt))
+        mode = .song(primed)
+        loadAndPlaySong(primed, fromElapsed: adjustedElapsed)
+    }
+
+    private func trackCandidate(id: UUID) -> Track? {
+        let pool = library.myTracks + library.feed
+        return pool.first { $0.id == id }
+    }
+
     /// Build a minimal Track object from a UUID + StemBundle so the listener
     /// can pass it into the song-mode view without a full library lookup.
     private func makeTrack(id: UUID, stems: StemBundle) -> Track {
         // Try to find the real track metadata from the library first.
         let pool = library.myTracks + library.feed
-        if let real = pool.first(where: { $0.id == id }) { return real }
+        if var real = pool.first(where: { $0.id == id }) {
+            real.stems = stems
+            real.status = .ready
+            return real
+        }
         // Fallback synthetic track.
         return Track(
             id: id,
@@ -291,6 +353,13 @@ final class LiveRadioListener: ObservableObject {
             status: .ready,
             durationSeconds: 0
         )
+    }
+
+    private func appendMessage(_ message: LiveRadioMessage) {
+        messages.append(message)
+        if messages.count > 80 {
+            messages.removeFirst(messages.count - 80)
+        }
     }
 
     private static func rms(buffer: AVAudioPCMBuffer) -> Float {

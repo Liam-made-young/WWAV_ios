@@ -48,13 +48,13 @@ struct CircularWaveform: View {
                     glow.stroke(
                         path,
                         with: .color(.white),
-                        style: StrokeStyle(lineWidth: 2.4, lineCap: .round)
+                        style: StrokeStyle(lineWidth: 2.2, lineCap: .round)
                     )
                 } else {
                     ctx.stroke(
                         path,
-                        with: .color(theme.accent.opacity(0.55)),
-                        style: StrokeStyle(lineWidth: 1.8, lineCap: .round)
+                        with: .color(theme.accent.opacity(0.42)),
+                        style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
                     )
                 }
             }

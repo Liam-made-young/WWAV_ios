@@ -53,6 +53,7 @@ targets:
         CFBundleShortVersionString: "0.1.0"
         CFBundleVersion: "1"
         CFBundleDisplayName: "wwav"
+        NSCameraUsageDescription: "WWAV uses your camera to post stories and attach photos to text posts."
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.wwav.app

@@ -3,6 +3,65 @@ import AVFoundation
 import Combine
 import MediaPlayer
 
+enum StemRemixEffect: String, CaseIterable, Identifiable, Sendable {
+    case distortion
+    case delay
+    case reverb
+    case tremolo
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .distortion: return "dist"
+        case .delay: return "delay"
+        case .reverb: return "reverb"
+        case .tremolo: return "tremolo"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .distortion: return "bolt.fill"
+        case .delay: return "repeat"
+        case .reverb: return "sparkles"
+        case .tremolo: return "waveform.path"
+        }
+    }
+}
+
+struct StemEffectState: Equatable, Sendable {
+    var distortion: Double = 0
+    var delay: Double = 0
+    var reverb: Double = 0
+    var tremolo: Double = 0
+
+    static let zero = StemEffectState()
+
+    var hasActiveEffects: Bool {
+        distortion > 0.001 || delay > 0.001 || reverb > 0.001 || tremolo > 0.001
+    }
+
+    func value(for effect: StemRemixEffect) -> Double {
+        switch effect {
+        case .distortion: return distortion
+        case .delay: return delay
+        case .reverb: return reverb
+        case .tremolo: return tremolo
+        }
+    }
+
+    mutating func set(_ effect: StemRemixEffect, value: Double) {
+        let v = max(0, min(1, value))
+        switch effect {
+        case .distortion: distortion = v
+        case .delay: delay = v
+        case .reverb: reverb = v
+        case .tremolo: tremolo = v
+        }
+    }
+}
+
 /// Plays four stems in sample-lock. Per-stem volume changes are applied to mixer
 /// nodes in real time, so the user can solo or fade individual stems while playing.
 @MainActor
@@ -16,6 +75,7 @@ final class StemPlayerEngine: ObservableObject {
     @Published private(set) var volumes: [StemKind: Double] = [
         .vox: 0.85, .bass: 0.70, .drum: 0.90, .synth: 0.55
     ]
+    @Published private(set) var effects: [StemKind: StemEffectState] = StemPlayerEngine.defaultEffectStates()
     /// 240 peak amplitudes [0...1] for the loaded track's drums/vox stem,
     /// used to render the circular waveform around the 3-D widget.
     @Published private(set) var peaks: [Float] = WaveformAnalyzer.placeholderPeaks()
@@ -27,10 +87,33 @@ final class StemPlayerEngine: ObservableObject {
     /// `prepareForPlayback` walks through the four files.
     @Published private(set) var preparingProgress: Double = 0
 
+    /// Playback rate applied to every stem's `AVAudioUnitTimePitch`. 0.5...2.0.
+    /// Pitch is preserved (TimePitch's whole job).
+    @Published private(set) var playbackRate: Double = 1.0
+    /// Pitch shift in semitones applied to every stem. -12...+12.
+    /// Tempo is preserved.
+    @Published private(set) var pitchSemitones: Double = 0
+    /// Beat length of the active in-place loop, or nil when looping is off.
+    @Published private(set) var activeLoopBeats: Double? = nil
+    /// Beats-per-minute used to translate the beat-length buttons into a
+    /// frame count for the loop region. Default 120; user-editable.
+    @Published var loopBPM: Double = 120
+
     // MARK: – Engine guts
     private let engine = AVAudioEngine()
-    private var nodes: [StemKind: (player: AVAudioPlayerNode, mixer: AVAudioMixerNode)] = [:]
+    private struct StemNodeChain {
+        let player: AVAudioPlayerNode
+        let timePitch: AVAudioUnitTimePitch
+        let distortion: AVAudioUnitDistortion
+        let delay: AVAudioUnitDelay
+        let reverb: AVAudioUnitReverb
+        let mixer: AVAudioMixerNode
+    }
+
+    private var nodes: [StemKind: StemNodeChain] = [:]
     private var files: [StemKind: AVAudioFile] = [:]
+    private var stemURLs: [StemKind: URL] = [:]
+    private var monitoringMuted: Set<StemKind> = []
     private var startSampleTime: AVAudioFramePosition = 0
     private var sampleRate: Double = 44100
     private var pausedFrame: AVAudioFramePosition = 0
@@ -40,6 +123,13 @@ final class StemPlayerEngine: ObservableObject {
     /// still fires after a `.stop()` — without this, pausing fires the "track
     /// ended" handler for the cancelled buffer and resets pausedFrame to 0.
     private var playGeneration: Int = 0
+    /// File frame where the active loop region begins. Frame-space, before
+    /// any TimePitch resampling — `currentFrame()` uses this to fold the
+    /// player's monotonically-increasing sampleTime back into a moving
+    /// playhead inside the region.
+    private var loopStartFrame: AVAudioFramePosition = 0
+    private var loopFrameCount: AVAudioFrameCount = 0
+    private var loopBuffers: [StemKind: AVAudioPCMBuffer] = [:]
 
     init() {
         configureSession()
@@ -79,7 +169,215 @@ final class StemPlayerEngine: ObservableObject {
     func setVolume(_ value: Double, for kind: StemKind) {
         let v = max(0, min(1, value))
         volumes[kind] = v
-        nodes[kind]?.mixer.outputVolume = Float(v)
+        applyOutputVolume(for: kind)
+    }
+
+    func effectState(for kind: StemKind) -> StemEffectState {
+        effects[kind] ?? .zero
+    }
+
+    func effectValue(_ effect: StemRemixEffect, for kind: StemKind) -> Double {
+        effectState(for: kind).value(for: effect)
+    }
+
+    func setEffect(_ effect: StemRemixEffect, value: Double, for kind: StemKind) {
+        var state = effectState(for: kind)
+        state.set(effect, value: value)
+        effects[kind] = state
+        applyEffectState(state, for: kind)
+    }
+
+    func resetEffects(for kind: StemKind) {
+        effects[kind] = .zero
+        applyEffectState(.zero, for: kind)
+    }
+
+    func resetAllEffects() {
+        effects = Self.defaultEffectStates()
+        for kind in StemKind.allCases {
+            applyEffectState(effects[kind] ?? .zero, for: kind)
+        }
+    }
+
+    // MARK: – Time / pitch / loop
+
+    func setPlaybackRate(_ value: Double) {
+        let v = max(0.5, min(2.0, value))
+        playbackRate = v
+        for (_, chain) in nodes {
+            chain.timePitch.rate = Float(v)
+        }
+        if isPlaying { updateNowPlaying() }
+    }
+
+    func setPitch(_ semitones: Double) {
+        let v = max(-12, min(12, semitones))
+        pitchSemitones = v
+        for (_, chain) in nodes {
+            chain.timePitch.pitch = Float(v * 100)  // cents
+        }
+    }
+
+    func resetTimeAndPitch() {
+        setPlaybackRate(1.0)
+        setPitch(0)
+    }
+
+    func setLoopBPM(_ bpm: Double) {
+        let v = max(40, min(220, bpm))
+        loopBPM = v
+        if let beats = activeLoopBeats {
+            // Re-anchor the loop on the current region start so BPM tweaks
+            // resize the region in place rather than dragging the playhead.
+            enableLoop(beats: beats, bpm: v, anchorFrame: loopStartFrame)
+        }
+    }
+
+    /// Captures the current playhead, schedules a `frameCount`-frame buffer
+    /// of every stem, and asks the player nodes to loop it indefinitely.
+    /// The downstream TimePitch unit handles wall-clock stretching, so a
+    /// loop of N beats stays musically N beats regardless of `playbackRate`.
+    func enableLoop(beats: Double, bpm: Double) {
+        enableLoop(beats: beats, bpm: bpm, anchorFrame: nil)
+    }
+
+    private func enableLoop(beats: Double, bpm: Double, anchorFrame: AVAudioFramePosition?) {
+        guard currentTrack != nil, let voxFile = files[.vox] else { return }
+        let safeBPM = max(40, min(220, bpm))
+        let secondsPerBeat = 60.0 / safeBPM
+        let wantedFrames = AVAudioFrameCount(max(0, beats * secondsPerBeat * sampleRate))
+        let startFrame = anchorFrame ?? currentFrame()
+        let maxFrames = AVAudioFrameCount(max(0, voxFile.length - startFrame))
+        let count = min(wantedFrames, maxFrames)
+        // Below ~one slice the loop would just chatter — bail out.
+        guard count > 1024 else { return }
+
+        do {
+            if !engine.isRunning { try engine.start() }
+        } catch {
+            print("StemPlayerEngine.enableLoop engine start failed: \(error)")
+            return
+        }
+
+        playGeneration += 1
+        for (_, pair) in nodes { pair.player.stop() }
+        loopBuffers.removeAll()
+
+        let when = AVAudioTime(
+            hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.05)
+        )
+
+        for kind in StemKind.allCases {
+            guard let file = files[kind], let pair = nodes[kind] else { continue }
+            let stemAvailable = AVAudioFrameCount(max(0, file.length - startFrame))
+            let n = min(count, stemAvailable)
+            guard n > 0,
+                  let buffer = AVAudioPCMBuffer(
+                    pcmFormat: file.processingFormat,
+                    frameCapacity: n
+                  )
+            else { continue }
+            file.framePosition = startFrame
+            do {
+                try file.read(into: buffer, frameCount: n)
+            } catch {
+                print("StemPlayerEngine.enableLoop read \(kind) failed: \(error)")
+                continue
+            }
+            loopBuffers[kind] = buffer
+            pair.player.scheduleBuffer(
+                buffer,
+                at: when,
+                options: [.loops, .interruptsAtLoop],
+                completionCallbackType: .dataPlayedBack
+            ) { _ in
+                // Swallowed — `.loops` should never fire end-of-buffer; if
+                // disableLoop / stop pulls the rug, the generation guard in
+                // `handleStemFinished` catches it.
+            }
+            pair.player.play(at: when)
+        }
+
+        loopStartFrame = startFrame
+        loopFrameCount = count
+        activeLoopBeats = beats
+        loopBPM = safeBPM
+        startSampleTime = startFrame
+        pausedFrame = startFrame
+        isPlaying = true
+        startDisplayLoop()
+        updateNowPlaying()
+    }
+
+    func disableLoop() {
+        guard activeLoopBeats != nil else { return }
+        let resumeFrame = currentFrame()
+        activeLoopBeats = nil
+        loopFrameCount = 0
+        loopBuffers.removeAll()
+        playGeneration += 1
+        for (_, pair) in nodes { pair.player.stop() }
+        pausedFrame = resumeFrame
+        if currentTrack != nil {
+            scheduleAllAndPlay(fromFrame: resumeFrame)
+        }
+    }
+
+    private var isLooping: Bool { activeLoopBeats != nil }
+
+    func setStemMonitoringMuted(_ muted: Bool, for kind: StemKind) {
+        if muted {
+            monitoringMuted.insert(kind)
+        } else {
+            monitoringMuted.remove(kind)
+        }
+        applyOutputVolume(for: kind)
+    }
+
+    func currentStemURL(for kind: StemKind) -> URL? {
+        stemURLs[kind]
+    }
+
+    func currentStemURLs() -> [StemKind: URL] {
+        stemURLs
+    }
+
+    func replaceStem(_ kind: StemKind, with url: URL) throws {
+        guard currentTrack != nil else { return }
+        let file = try AVAudioFile(forReading: url)
+        let wasPlaying = isPlaying
+        let frame = wasPlaying ? currentFrame() : pausedFrame
+
+        playGeneration += 1
+        for (_, pair) in nodes { pair.player.stop() }
+
+        files[kind] = file
+        stemURLs[kind] = url
+        recalculateDuration()
+
+        if var track = currentTrack, var bundle = track.stems {
+            switch kind {
+            case .vox: bundle.vox = url
+            case .bass: bundle.bass = url
+            case .drum: bundle.drum = url
+            case .synth: bundle.synth = url
+            }
+            track.stems = bundle
+            currentTrack = track
+        }
+
+        pausedFrame = min(frame, AVAudioFramePosition(duration * sampleRate))
+        elapsed = min(duration, Double(pausedFrame) / sampleRate)
+
+        if kind == .drum {
+            computePeaksAsync(for: url)
+        }
+
+        if wasPlaying {
+            scheduleAllAndPlay(fromFrame: pausedFrame)
+        } else {
+            updateNowPlaying()
+        }
     }
 
     /// Loads a track's stems into the engine and starts playback at frame 0.
@@ -96,6 +394,17 @@ final class StemPlayerEngine: ObservableObject {
         stopAll()
         for (_, pair) in nodes { pair.player.reset() }
         files.removeAll()
+        stemURLs.removeAll()
+        monitoringMuted.removeAll()
+        resetAllEffects()
+        // Tempo / pitch / loop are per-track — a fresh song starts at 1.0×,
+        // 0 semitones, no loop. Without this, stale loop buffers from the
+        // previous track would dangle in `loopBuffers`.
+        activeLoopBeats = nil
+        loopFrameCount = 0
+        loopBuffers.removeAll()
+        setPlaybackRate(1.0)
+        setPitch(0)
         currentTrack = track
         elapsed = 0
         pausedFrame = 0
@@ -110,6 +419,7 @@ final class StemPlayerEngine: ObservableObject {
                 let url = bundle.url(for: kind)
                 let file = try AVAudioFile(forReading: url)
                 newFiles[kind] = file
+                stemURLs[kind] = url
                 newSampleRate = file.processingFormat.sampleRate
                 newDuration = max(newDuration, Double(file.length) / newSampleRate)
             }
@@ -118,8 +428,8 @@ final class StemPlayerEngine: ObservableObject {
             sampleRate = newSampleRate
             duration = newDuration
             for kind in StemKind.allCases {
-                guard let pair = nodes[kind] else { continue }
-                pair.mixer.outputVolume = Float(volumes[kind] ?? 0.8)
+                applyEffectState(effects[kind] ?? .zero, for: kind)
+                applyOutputVolume(for: kind)
             }
 
             if !engine.isRunning {
@@ -131,6 +441,7 @@ final class StemPlayerEngine: ObservableObject {
         } catch {
             print("StemPlayerEngine.load error: \(error)")
             files.removeAll()
+            stemURLs.removeAll()
             currentTrack = nil
             duration = 0
             isPlaying = false
@@ -168,6 +479,7 @@ final class StemPlayerEngine: ObservableObject {
         for (_, pair) in nodes { pair.player.stop() }
         isPlaying = false
         displayTimer?.invalidate()
+        updateAllOutputVolumes()
         updateNowPlaying()
         // Keep the engine itself running — it's cheap and resume becomes instant.
     }
@@ -179,7 +491,13 @@ final class StemPlayerEngine: ObservableObject {
             // Defensive: bump generation + clear any lingering queue.
             playGeneration += 1
             for (_, pair) in nodes { pair.player.stop() }
-            scheduleAllAndPlay(fromFrame: pausedFrame)
+            if let beats = activeLoopBeats {
+                // Resume re-enters the loop at the same region start so
+                // pause/play feels like a single hold-and-release.
+                enableLoop(beats: beats, bpm: loopBPM, anchorFrame: loopStartFrame)
+            } else {
+                scheduleAllAndPlay(fromFrame: pausedFrame)
+            }
         } catch {
             print("StemPlayerEngine.resume error: \(error)")
         }
@@ -187,6 +505,14 @@ final class StemPlayerEngine: ObservableObject {
 
     func seek(to seconds: Double) {
         guard currentTrack != nil else { return }
+        // Seeking exits the loop — the user is asking for free playback at a
+        // new position. Without this, scheduleAllAndPlay below would clash
+        // with the looping buffers.
+        if isLooping {
+            activeLoopBeats = nil
+            loopFrameCount = 0
+            loopBuffers.removeAll()
+        }
         let target = max(0, min(seconds, duration))
         let targetFrame = AVAudioFramePosition(target * sampleRate)
         pausedFrame = targetFrame
@@ -270,7 +596,7 @@ final class StemPlayerEngine: ObservableObject {
         info[MPMediaItemPropertyArtist] = track.artist
         info[MPMediaItemPropertyPlaybackDuration] = duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
-        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? playbackRate : 0.0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
@@ -312,13 +638,50 @@ final class StemPlayerEngine: ObservableObject {
     private func installNodes() {
         for kind in StemKind.allCases {
             let player = AVAudioPlayerNode()
+
+            // TimePitch sits first so the colour effects (distortion / delay /
+            // reverb) operate on the time-stretched signal — that way reverb
+            // tails follow the BPM when the user slows the track down.
+            let timePitch = AVAudioUnitTimePitch()
+            timePitch.rate = 1.0
+            timePitch.pitch = 0
+
+            let distortion = AVAudioUnitDistortion()
+            distortion.loadFactoryPreset(.multiDistortedSquared)
+            distortion.wetDryMix = 0
+            distortion.preGain = 0
+
+            let delay = AVAudioUnitDelay()
+            delay.wetDryMix = 0
+            delay.feedback = 0
+            delay.lowPassCutoff = 15_000
+
+            let reverb = AVAudioUnitReverb()
+            reverb.loadFactoryPreset(.mediumHall)
+            reverb.wetDryMix = 0
+
             let mixer  = AVAudioMixerNode()
             engine.attach(player)
+            engine.attach(timePitch)
+            engine.attach(distortion)
+            engine.attach(delay)
+            engine.attach(reverb)
             engine.attach(mixer)
-            engine.connect(player, to: mixer, format: nil)
+            engine.connect(player, to: timePitch, format: nil)
+            engine.connect(timePitch, to: distortion, format: nil)
+            engine.connect(distortion, to: delay, format: nil)
+            engine.connect(delay, to: reverb, format: nil)
+            engine.connect(reverb, to: mixer, format: nil)
             engine.connect(mixer, to: engine.mainMixerNode, format: nil)
-            mixer.outputVolume = Float(volumes[kind] ?? 0.8)
-            nodes[kind] = (player, mixer)
+            nodes[kind] = StemNodeChain(
+                player: player,
+                timePitch: timePitch,
+                distortion: distortion,
+                delay: delay,
+                reverb: reverb,
+                mixer: mixer
+            )
+            applyOutputVolume(for: kind)
         }
         engine.prepare()
     }
@@ -363,6 +726,10 @@ final class StemPlayerEngine: ObservableObject {
         // guard, pause() fires the completion for the cancelled segment and
         // we mistake it for "track ended", resetting the playhead to 0.
         guard generation == playGeneration else { return }
+        // Belt-and-braces: `.loops` shouldn't fire end-of-buffer, but
+        // disableLoop's `stop()` will. The generation bump above already
+        // catches that, but a second guard is cheap.
+        guard !isLooping else { return }
         guard kind == .vox else { return }
         stopAll()
         elapsed = duration
@@ -374,6 +741,7 @@ final class StemPlayerEngine: ObservableObject {
         for (_, pair) in nodes { pair.player.stop() }
         isPlaying = false
         displayTimer?.invalidate()
+        updateAllOutputVolumes()
     }
 
     // MARK: – Position tracking
@@ -383,6 +751,14 @@ final class StemPlayerEngine: ObservableObject {
               let nodeTime = pair.player.lastRenderTime,
               let playerTime = pair.player.playerTime(forNodeTime: nodeTime)
         else { return pausedFrame }
+        if isLooping, loopFrameCount > 0 {
+            // Player's sampleTime keeps incrementing past the loop boundary
+            // (the buffer wraps). Fold it back into the region so `elapsed`
+            // pulses around the loop instead of running off the end of the
+            // file.
+            let offset = Int64(playerTime.sampleTime) % Int64(loopFrameCount)
+            return loopStartFrame + AVAudioFramePosition(offset)
+        }
         return startSampleTime + playerTime.sampleTime
     }
 
@@ -394,6 +770,7 @@ final class StemPlayerEngine: ObservableObject {
                 guard let self else { return }
                 let f = self.currentFrame()
                 self.elapsed = max(0, Double(f) / self.sampleRate)
+                self.updateTremoloVolumes()
                 // Refresh Now Playing ~once a second so the lock-screen
                 // scrubber stays accurate without thrashing the API.
                 ticksSinceNowPlayingPush += 1
@@ -404,5 +781,61 @@ final class StemPlayerEngine: ObservableObject {
             }
         }
         if let t = displayTimer { RunLoop.main.add(t, forMode: .common) }
+    }
+
+    private static func defaultEffectStates() -> [StemKind: StemEffectState] {
+        Dictionary(uniqueKeysWithValues: StemKind.allCases.map { ($0, StemEffectState.zero) })
+    }
+
+    private func recalculateDuration() {
+        duration = files.values
+            .map { Double($0.length) / $0.processingFormat.sampleRate }
+            .max() ?? 0
+    }
+
+    private func applyEffectState(_ state: StemEffectState, for kind: StemKind) {
+        guard let chain = nodes[kind] else { return }
+
+        chain.distortion.wetDryMix = Float(state.distortion * 82)
+        chain.distortion.preGain = Float(state.distortion * 18)
+
+        chain.delay.wetDryMix = Float(state.delay * 58)
+        chain.delay.delayTime = 0.08 + state.delay * 0.46
+        chain.delay.feedback = Float(state.delay <= 0.001 ? 0 : 14 + state.delay * 48)
+
+        chain.reverb.wetDryMix = Float(state.reverb * 66)
+        applyOutputVolume(for: kind)
+    }
+
+    private func updateAllOutputVolumes() {
+        for kind in StemKind.allCases {
+            applyOutputVolume(for: kind)
+        }
+    }
+
+    private func updateTremoloVolumes() {
+        guard effects.values.contains(where: { $0.tremolo > 0.001 }) else { return }
+        updateAllOutputVolumes()
+    }
+
+    private func applyOutputVolume(for kind: StemKind) {
+        guard let chain = nodes[kind] else { return }
+        guard !monitoringMuted.contains(kind) else {
+            chain.mixer.outputVolume = 0
+            return
+        }
+        let base = volumes[kind] ?? 0
+        let state = effects[kind] ?? .zero
+        let depth = max(0, min(1, state.tremolo))
+        guard depth > 0.001 else {
+            chain.mixer.outputVolume = Float(base)
+            return
+        }
+
+        let rate = 3.5 + depth * 5.5
+        let phase = Date.timeIntervalSinceReferenceDate * rate * 2 * Double.pi
+        let lfo = (sin(phase) + 1) * 0.5
+        let multiplier = 1 - (depth * 0.82 * lfo)
+        chain.mixer.outputVolume = Float(max(0, base * multiplier))
     }
 }
